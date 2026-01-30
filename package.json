@@ -1,24 +1,6 @@
 {
   "name": "agent-annotation-schema-proposal",
-  "description": "A proposal for structured annotations in code comments that agents can query without scanning entire files.",
+  "description": "A proposal for structured, language-agnostic code annotations stored externally and queryable via CSS-like selectors.",
   "private": true,
-  "type": "module",
-  "scripts": {
-    "typecheck": "tsc"
-  },
-  "keywords": [
-    "claude",
-    "agent",
-    "claude code"
-  ],
-  "license": "MIT",
-  "engines": {
-    "node": ">=22"
-  },
-  "devDependencies": {
-    "@tsconfig/node-lts": "^24.0.0",
-    "@tsconfig/vite-react": "^7.0.2",
-    "@types/react": "^19.2.8",
-    "typescript": "^5.9.3"
-  }
+  "license": "MIT"
 }

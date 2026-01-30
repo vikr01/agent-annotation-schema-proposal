@@ -1,0 +1,24 @@
+annotations:
+  - select: 'function[name="TodoList"]'
+    tag: component
+    attrs:
+      id: TodoList
+      owner: "@frontend"
+      visibility: public
+    children:
+      - select: 'call[name="useSuspenseQuery"]'
+        tag: react-hook
+        attrs:
+          boundary: "requires Suspense ancestor"
+          preload: "queryClient.prefetchQuery($1)"
+          invalidate: "queryClient.invalidateQueries({ queryKey: $1.queryKey })"
+          invalidate-key: "$1.queryKey"
+          note: "Cache key must match server prefetch in getServerSideProps"
+
+      - select: 'call[name="sortByCompletedDate"]'
+        tag: perf-critical
+        attrs:
+          owner: "@platform"
+          audience: infra
+          sla: "50ms for 10k items"
+          note: "O(n log n) sort — profile before changing algorithm"

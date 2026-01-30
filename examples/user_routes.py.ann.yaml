@@ -1,0 +1,36 @@
+annotations:
+  - select: 'function[name="create_user"]'
+    tag: controller
+    attrs:
+      method: POST
+      path: /users
+      auth: required
+      owner: "@backend"
+      visibility: public
+    children:
+      - select: 'param[name="user"]'
+        tag: validation
+        attrs:
+          schema: UserCreate
+          source: body
+          note: "Pydantic validates automatically — raises 422 on invalid input"
+
+  - select: 'function[name="get_user"]'
+    tag: controller
+    attrs:
+      method: GET
+      path: /users/{user_id}
+      auth: none
+      owner: "@backend"
+      visibility: public
+      note: "Public endpoint — no auth required, rate-limited to 100 req/min"
+
+  - select: 'function[name="list_users"]'
+    tag: controller
+    attrs:
+      method: GET
+      path: /users
+      auth: required
+      owner: "@backend"
+      audience: product
+      visibility: public

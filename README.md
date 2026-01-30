@@ -1,163 +1,158 @@
-# Agent Annotation Schema Proposal
+# Agent Annotation Schema
 
-A proposal for structured annotations in code comments that agents can query without scanning entire files.
+Structured annotations that agents can query without scanning entire files
 
-## Problem
+`CLAUDE.md` gives agents project-level context; this gives expression-level context that source code can't express
 
-Agents need dense, structured metadata about code that humans find noisy. Current solutions like `CLAUDE.md` or `AGENTS.md` are file-level, not expression-level. Every time an agent touches a file, it lacks fine-grained context about specific lines, props, hooks, etc.
+Coding agents ([`claude`](https://claude.ai/code), [`codex`](https://openai.com/index/introducing-codex/), [`opencode`](https://opencode.ai), [`cursor`](https://cursor.com), [`windsurf`](https://windsurf.com), [`copilot`](https://code.visualstudio.com/docs/copilot/overview)) read source into a finite context window (64K-200K tokens); no structured metadata layer to query
 
-## Solution
+## Contents
 
-XML-like annotations embedded in code comments, queryable via CSS selector-like syntax with Prolog-style unification for dynamic values.
+- [Before and After](#before-and-after)
+- [How It Works](#how-it-works)
+- [Beyond Bigger Context Windows](#beyond-bigger-context-windows)
+- [Documentation](#documentation)
+- [References](#references)
 
-## Design Influences
+## Before and After
 
-| Source | What we borrow |
-|--------|----------------|
-| XML/HTML | Tag and attribute structure |
-| JSX | Curly braces `{}` for expression context |
-| [CSS Selectors](https://developer.mozilla.org/en-US/docs/Web/API/Document_Object_Model/Locating_DOM_elements_using_selectors) | Query by tag, id, attribute—fast because browsers optimize selector matching |
-| Prolog | Unification variables, pattern matching |
-| Shell/Perl | Positional arguments (`$1`, `$2`, ...) |
+Task: *"Add rate limiting to `createUser`"*
 
-## Syntax
+| | Today | With Annotations |
+|:--|:--|:--|
+| **→ Agent runs** | `cat src/userController.ts`<br>`cat src/userService.ts`<br>`cat src/userMiddleware.ts`<br>`rg "createUser"` (34 matches)<br>`cat src/authHelpers.ts`<br>`cat src/rateLimiter.ts`<br>`cat src/apiRouter.ts` | `mcp__aql__select 'controller[name="createUser"]'` |
+| **← Response** | ~4,200 tokens of raw source across 7 files | `createUser` endpoint metadata:<br>`owner: @backend`<br>`sla: 200ms p99`<br>`path: POST /api/users`<br>`auth: required`<br>`visibility: public` |
+| **Outcome** | Agent edits without knowing `createUser` endpoint ownership, p99 SLA, or auth requirements | Agent edits with full context |
 
-| Element | Description |
-|---------|-------------|
-| `<tag attr="value">` | Annotation wrapping code |
-| `<@>` | Self-reference—attach attributes to code that already declares its type |
-| `$N` | Nth argument of annotated call (1-indexed) |
-| `$N.path` | Property access into argument |
-| `$0` | Return value of annotated call |
-| `{expr}` | Expression with unification, evaluated at query time |
-| `-list` suffix | Container convention (e.g., `<prop-list>`, `<omission-list>`) |
+Agents can read code, not metadata: endpoint ownership, SLAs, deprecation status
 
-### Self-referencing with `<@>`
+That knowledge lives in developers' heads, rediscovered every time
 
-When code already declares its type (e.g., `interface`, `function`), use `<@>` to attach attributes without redundancy:
+## How It Works
 
-```ts
-// <@ visibility="public">
-interface AQL { ... }
-// </@>
+- `.ann.yaml` sidecar file next to source
+  - CSS-like selectors point at code elements
+  - Structured metadata attaches to those elements
+  - Captures what source code can't express: ownership, performance contracts, cache recipes, deprecation intent
+  - If derivable from reading source (concurrency patterns, type signatures, return types), doesn't belong in an annotation
+- Agent queries via MCP, no source scanning
+  - Same selectors across all languages
+  - `function[name="create"]` matches `func create()` in Go, `async def create()` in Python
+- `.annotations/schema.yaml` [manifest](./docs/decisions.md) at project root defines available tags
+  - Agent reads once, knows what to query
+
+**Source:**
+
+```tsx
+// TodoList.tsx
+export function TodoList(props: TodoListProps): React.ReactNode {
+  const { data } = useSuspenseQuery({
+    queryKey: ["todos", props.userId],
+    queryFn: () => fetchTodos(props.userId),
+  });
+
+  if (props.filter === "completed") {
+    const sorted = sortByCompletedDate(data);
+    return <TodoListView {...props} items={sorted} isLoading={false} />;
+  }
+
+  return <TodoListView {...props} items={data} isLoading={false} />;
+}
 ```
 
-### Positional bindings with `$N`
+**Annotation:**
 
-Reference arguments from annotated code:
-
-```ts
-// <react-hook
-//   preload={queryClient.prefetchQuery($1)}
-// >
-const { data } = useSuspenseQuery({ queryKey: ['todos', props.userId], ... });
-// </react-hook>
+```yaml
+# TodoList.tsx.ann.yaml
+annotations:
+  - select: 'function[name="TodoList"]'
+    tag: component
+    attrs:
+      id: TodoList
+      owner: "@frontend"
+      visibility: public
+    children:
+      - select: 'call[name="useSuspenseQuery"]'
+        tag: react-hook
+        attrs:
+          boundary: "requires Suspense ancestor"
+          preload: "queryClient.prefetchQuery($1)"
+          invalidate-key: "$1.queryKey"
 ```
 
-`$1` resolves to `{ queryKey: ['todos', props.userId], ... }` from the actual code.
+**Query and result:**
 
-## Files
-
-- [`schema/spec/aql.ts`](./schema/spec/aql.ts) — Agent Query Language interface
-- [`schema/examples/TodoList.tsx`](./schema/examples/TodoList.tsx) — Annotated React component
-
-## Query API
-
-### `aql.select(selector)` — CSS-like selection
-
-```ts
-// Find all suspending hooks
-aql.select('react-hook[suspends="true"]')
-// → [<react-hook suspends="true" ...>...</react-hook>]
-
-// Find all omitted props
-aql.select('omission')
-// → [<omission reason="fetched from API">'items'</omission>,
-//    <omission reason="computed from fetch state">'isLoading'</omission>]
-
-// Find performance-critical code owned by platform team
-aql.select('perf-critical[owner="@platform"]')
-// → [<perf-critical owner="@platform" audience="infra" visibility="internal">
-//    const sorted = sortByCompletedDate(data);
-//    </perf-critical>]
+```sh
+$ mcp__aql__select 'react-hook[boundary]'
 ```
 
-### `node.closest(selector)` — Ancestor traversal
-
-```ts
-const node = aql.select('perf-critical[owner="@platform"]')[0]
-
-node.closest('branch')
-// → <branch condition={props.filter === 'completed'}>if (props.filter === 'completed') { ... }</branch>
-
-node.closest('component')
-// → <component id="TodoList">export function TodoList(props: TodoListProps) { ... }</component>
-
-node.ancestors()
-// → ['perf-critical', 'branch', 'component']
-
-node.closest('[audience]')
-// → <perf-critical owner="@platform" audience="infra" visibility="internal">...</perf-critical>
-
-node.closest('branch')?.attr('condition')
-// → 'props.filter === "completed"'
+```json
+[
+  {
+    "tag": "react-hook",
+    "codeSelector": "call[name=\"useSuspenseQuery\"]",
+    "file": "TodoList.tsx",
+    "attrs": {
+      "boundary": "requires Suspense ancestor",
+      "preload": "queryClient.prefetchQuery($1)",
+      "invalidate-key": "$1.queryKey"
+    }
+  }
+]
 ```
 
-### `node.selectWithin(selector)` — Descendant traversal
+```sh
+# same query across Go, TS, Python
+$ mcp__aql__select 'controller[method="POST"]'
 
-```ts
-const component = aql.select('component')[0]
-
-component.selectWithin('react-hook')
-// → [<react-hook suspends="true" ...>const { data } = useSuspenseQuery({ ... });</react-hook>]
-
-component.selectWithin('render')
-// → [<render>return (<TodoListView ... />);</render>, <render>return (<TodoListView ... />);</render>]
-
-component.selectWithin('branch > render')
-// → [<render>return (<TodoListView ... />);</render>]  // only render inside branch
+# platform team ownership
+$ mcp__aql__select '[owner="@platform"]'
 ```
 
-### `node.next(selector?)` — Sibling traversal
+## Beyond Bigger Context Windows
 
-```ts
-const hook = aql.select('react-hook')[0]
+- Bigger context windows won't make this unnecessary, same as a faster database not eliminating the need for indexes
+  - Full table scan vs indexed query: not about hardware speed, about declaring what you need
+  - `SELECT owner, sla FROM endpoints WHERE name = 'createUser'` won't become unnecessary because the database can read every row faster
+- People work the same way
+  - Nobody reads an entire codebase to answer "who owns this endpoint?"
+  - They skim, ⌘F, ask someone who knows
+- Both improve in parallel: smarter models *and* structured metadata
+  - Faster engines *and* better indexes
 
-hook.next()
-// → <branch condition={props.filter === 'completed'}>...</branch>
+## Documentation
 
-hook.next('render')
-// → <render>return (<TodoListView ... />);</render>
-```
+**[Full documentation →](./docs/)**
 
-### `node.resolve(attr)` — Prolog-style binding resolution
-
-```ts
-const hook = aql.select('react-hook[preload]')[0]
-
-hook.attr('preload')
-// → 'queryClient.prefetchQuery($1)'  // raw template
-
-hook.resolve('preload')
-// → 'queryClient.prefetchQuery({ queryKey: ["todos", props.userId], queryFn: () => fetchTodos(props.userId) })'
-
-hook.binding('$1')
-// → '{ queryKey: ["todos", props.userId], queryFn: () => fetchTodos(props.userId) }'
-
-hook.binding('$1.queryKey')
-// → '["todos", props.userId]'
-```
-
-## Built-in Attributes
-
-| Attribute | Purpose |
-|-----------|---------|
-| `id` | Unique identifier for the node |
-| `visibility` | API stability: `public` (stable) or `internal` (may change) |
-| `audience` | Who this is relevant to: `product`, `infra`, etc. |
-| `owner` | Team/person responsible (e.g., `@platform`) |
-| `note` | Human-readable explanation |
+| Document | Description |
+|----------|-------------|
+| [RFC](./text/0001-agent-annotation-schema.md) | Full specification: selectors, code elements, annotation format, schema manifests, AQL |
+| [Walkthrough](./docs/walkthrough.md) | Applied to Grafana's Go + TypeScript codebase |
+| [Decision Log](./docs/decisions.md) | What we chose, what we ruled out, why |
+| [Examples](./examples/) | Source files (Go, TS, Python) with `.ann.yaml` sidecars |
 
 ## Status
 
-**Early exploration** — still figuring out if this idea has legs.
+| Component | Description | Status |
+|-----------|-------------|--------|
+| Proposal | This document | Drafting |
+| Specification | [RFC](./text/0001-agent-annotation-schema.md) | Drafting |
+| Core query language | Selector parsing, annotation matching, code element model | Sketched (type interfaces) |
+| Code resolver: TypeScript | TypeScript/TSX → universal code elements | Planned |
+| Code resolver: Go | Go → universal code elements | Planned |
+| Code resolver: Python | Python → universal code elements | Planned |
+| Annotation store | `.ann.yaml` sidecar reading, schema manifest validation | Planned |
+| MCP server | Exposes query language as MCP tools | Planned |
+| Mutations | Transactional read/write for annotation files | Planned |
+
+---
+
+## References
+
+1. **^** Anthropic, ["Best Practices for Claude Code"](https://code.claude.com/docs/en/best-practices), *Claude Code Documentation*
+2. **^** OpenAI, ["Introducing Codex"](https://openai.com/index/introducing-codex/), *OpenAI Blog*; see also [Prompting Guide](https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide), [GPT-5.2-Codex](https://openai.com/index/introducing-gpt-5-2-codex/)
+3. **^** rekram1-node, [Issue #3184](https://github.com/sst/opencode/issues/3184), *OpenCode, GitHub*
+4. **^** Cursor, ["Codebase Indexing"](https://cursor.com/docs/context/codebase-indexing), *Cursor Documentation*
+5. **^** Windsurf, ["Context Awareness"](https://docs.windsurf.com/context-awareness/windsurf-overview), *Windsurf Documentation*
+6. **^** Microsoft, ["Make chat an expert in your workspace"](https://code.visualstudio.com/docs/copilot/reference/workspace-context), *VS Code Documentation*
+7. **^** xAI, ["Grok Code Fast 1"](https://x.ai/news/grok-code-fast-1), *xAI News*

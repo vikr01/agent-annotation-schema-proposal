@@ -1,0 +1,35 @@
+annotations:
+  - select: 'function[name="HandleCreateUser"]'
+    tag: controller
+    attrs:
+      method: POST
+      path: /api/users
+      auth: required
+      owner: "@backend"
+      visibility: public
+    children:
+      - select: 'call[name="Decode"]'
+        tag: validation
+        attrs:
+          source: body
+          note: "Rejects malformed JSON with 400 — no partial updates"
+
+  - select: 'function[name="HandleGetUser"]'
+    tag: controller
+    attrs:
+      method: GET
+      path: /api/users/{id}
+      auth: required
+      owner: "@backend"
+      visibility: public
+
+  - select: 'function[name="HandleListUsers"]'
+    tag: controller
+    attrs:
+      method: GET
+      path: /api/users
+      auth: required
+      owner: "@backend"
+      audience: product
+      visibility: public
+      note: "Paginated — returns max 100 users per page"
