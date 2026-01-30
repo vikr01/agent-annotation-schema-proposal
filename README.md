@@ -21,10 +21,10 @@ Task: *"Add rate limiting to `createUser`"*
 | | Today | With Annotations |
 |:--|:--|:--|
 | **→ Agent runs** | `cat src/userController.ts`<br>`cat src/userService.ts`<br>`cat src/userMiddleware.ts`<br>`rg "createUser"` (34 matches)<br>`cat src/authHelpers.ts`<br>`cat src/rateLimiter.ts`<br>`cat src/apiRouter.ts` | `mcp__aql__select 'controller[name="createUser"]'` |
-| **← Response** | ~4,200 tokens of raw source across 7 files | `createUser` endpoint metadata:<br>`owner: @backend`<br>`sla: 200ms p99`<br>`path: POST /api/users`<br>`auth: required`<br>`visibility: public` |
-| **Outcome** | Agent edits without knowing `createUser` endpoint ownership, p99 SLA, or auth requirements | Agent edits with full context |
+| **← Response** | ~4,200 tokens of raw source across 7 files | `createUser` endpoint metadata:<br>`owner: @backend`<br>`response-time: 200ms`<br>`path: POST /api/users`<br>`auth: required`<br>`visibility: public` |
+| **Outcome** | Agent edits without knowing `createUser` endpoint ownership, response time target, or auth requirements | Agent edits with full context |
 
-Agents can read code, not metadata: endpoint ownership, SLAs, deprecation status
+Agents can read code, not metadata: endpoint ownership, performance targets, deprecation status
 
 That knowledge lives in developers' heads, rediscovered every time
 
@@ -37,7 +37,10 @@ That knowledge lives in developers' heads, rediscovered every time
   - If derivable from reading source (concurrency patterns, type signatures, return types), doesn't belong in an annotation
 - Agent queries via MCP, no source scanning
   - Same selectors across all languages
-  - `function[name="create"]` matches `func create()` in Go, `async def create()` in Python
+    - `function[name="create"]`
+      - Go: `func create()`
+      - TypeScript: `function create()`
+      - Python: `def create()`
 - `.annotations/schema.yaml` [manifest](./docs/decisions.md) at project root defines available tags
   - Agent reads once, knows what to query
 
@@ -45,18 +48,23 @@ That knowledge lives in developers' heads, rediscovered every time
 
 ```tsx
 // TodoList.tsx
-export function TodoList(props: TodoListProps): React.ReactNode {
-  const { data } = useSuspenseQuery({
-    queryKey: ["todos", props.userId],
-    queryFn: () => fetchTodos(props.userId),
-  });
+export function TodoList({ userId, filter }: TodoListProps): React.ReactNode {
+  const [todos, setTodos] = useState<Todo[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  if (props.filter === "completed") {
-    const sorted = sortByCompletedDate(data);
-    return <TodoListView {...props} items={sorted} isLoading={false} />;
+  useEffect(() => {
+    fetchTodos(userId).then((data) => {
+      setTodos(data);
+      setIsLoading(false);
+    });
+  }, [userId]);
+
+  if (filter === "completed") {
+    const sorted = sortByCompletedDate(todos);
+    return <TodoListView items={sorted} isLoading={false} />;
   }
 
-  return <TodoListView {...props} items={data} isLoading={false} />;
+  return <TodoListView items={todos} isLoading={isLoading} />;
 }
 ```
 
@@ -72,30 +80,28 @@ annotations:
       owner: "@frontend"
       visibility: public
     children:
-      - select: 'call[name="useSuspenseQuery"]'
+      - select: 'call[name="useEffect"]'
         tag: react-hook
         attrs:
-          boundary: "requires Suspense ancestor"
-          preload: "queryClient.prefetchQuery($1)"
-          invalidate-key: "$1.queryKey"
+          error-handling: "silent, no error state"
+          note: "Refetches on userId change"
 ```
 
 **Query and result:**
 
 ```sh
-$ mcp__aql__select 'react-hook[boundary]'
+$ mcp__aql__select 'react-hook[error-handling]'
 ```
 
 ```json
 [
   {
     "tag": "react-hook",
-    "codeSelector": "call[name=\"useSuspenseQuery\"]",
+    "codeSelector": "call[name=\"useEffect\"]",
     "file": "TodoList.tsx",
     "attrs": {
-      "boundary": "requires Suspense ancestor",
-      "preload": "queryClient.prefetchQuery($1)",
-      "invalidate-key": "$1.queryKey"
+      "error-handling": "silent, no error state",
+      "note": "Refetches on userId change"
     }
   }
 ]
@@ -113,7 +119,7 @@ $ mcp__aql__select '[owner="@platform"]'
 
 - Bigger context windows won't make this unnecessary, same as a faster database not eliminating the need for indexes
   - Full table scan vs indexed query: not about hardware speed, about declaring what you need
-  - `SELECT owner, sla FROM endpoints WHERE name = 'createUser'` won't become unnecessary because the database can read every row faster
+  - `SELECT owner, response_time FROM endpoints WHERE name = 'createUser'` won't become unnecessary because the database can read every row faster
 - People work the same way
   - Nobody reads an entire codebase to answer "who owns this endpoint?"
   - They skim, ⌘F, ask someone who knows
@@ -138,9 +144,7 @@ $ mcp__aql__select '[owner="@platform"]'
 | Proposal | This document | Drafting |
 | Specification | [RFC](./text/0001-agent-annotation-schema.md) | Drafting |
 | Core query language | Selector parsing, annotation matching, code element model | Sketched (type interfaces) |
-| Code resolver: TypeScript | TypeScript/TSX → universal code elements | Planned |
-| Code resolver: Go | Go → universal code elements | Planned |
-| Code resolver: Python | Python → universal code elements | Planned |
+| Resolvers | Plugin-based parsing into universal elements (code, natural language, others) | Planned |
 | Annotation store | `.ann.yaml` sidecar reading, schema manifest validation | Planned |
 | MCP server | Exposes query language as MCP tools | Planned |
 | Mutations | Transactional read/write for annotation files | Planned |

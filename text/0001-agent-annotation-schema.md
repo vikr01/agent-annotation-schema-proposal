@@ -20,16 +20,14 @@
 - [References](#references)
 
 ## Summary
-[↩](#contents)
 
 A structured, language-agnostic system for attaching queryable metadata to code. Annotations are stored in external sidecar files (`.ann.yaml`), anchored to code via CSS-like selectors, and queried through a unified API. A schema manifest enables tag discovery without scanning source files.
 
 ## Basic Example
-[↩](#contents)
 
-Three backend handlers in three languages. The source code shows they take HTTP requests — but not who owns them, what the auth model is, or where they sit in the API surface:
+Three backend handlers in three languages. The source code shows they take HTTP requests, but not who owns them, what the auth model is, or where they sit in the API surface:
 
-**Go** — `UserController.go.ann.yaml`:
+**Go**: `UserController.go.ann.yaml`
 ```yaml
 annotations:
   - select: 'function[name="HandleCreateUser"]'
@@ -42,7 +40,7 @@ annotations:
       visibility: public
 ```
 
-**TypeScript** — `userController.ts.ann.yaml`:
+**TypeScript**: `userController.ts.ann.yaml`
 ```yaml
 annotations:
   - select: 'function[name="createUser"]'
@@ -55,7 +53,7 @@ annotations:
       visibility: public
 ```
 
-**Python** — `user_routes.py.ann.yaml`:
+**Python**: `user_routes.py.ann.yaml`
 ```yaml
 annotations:
   - select: 'function[name="create_user"]'
@@ -75,31 +73,36 @@ aql.select('[owner="@backend"]')
 ```
 
 ## Motivation
-[↩](#contents)
 
-Agents can read source code. They can see that a function is async, that a hook is called `useSuspenseQuery`, that a handler takes `http.ResponseWriter`. What they can't see: who owns this code, what the performance SLA is, how to prefetch a query cache, which frontend hook calls which backend endpoint, or that this API is being deprecated next quarter. That metadata lives in developers' heads and gets rediscovered — or worse, guessed — every time.
+Agents can read source code. They can see that a function is async, that a hook is called `useSuspenseQuery`, that a handler takes `http.ResponseWriter`. What they can't see: who owns this code, what the performance SLA is, how to prefetch a query cache, which frontend hook calls which backend endpoint, or that this API is being deprecated next quarter. That metadata lives in developers' heads and gets rediscovered (or worse, guessed) every time.
 
 Current solutions like `CLAUDE.md` or `AGENTS.md` are project-level, not expression-level. They can say "this project uses React Query" but not "here's how to invalidate this specific hook's cache."
 
-The first iteration embedded annotations as inline code comments. This fails at scale — merge conflicts, AI churn, and no tag discovery without scanning every file <sup>[1, §1]</sup>. These constraints demand external storage, a discovery mechanism, and a language-agnostic query system.
+The first iteration embedded annotations as inline code comments. This fails at scale: merge conflicts, AI churn, and no tag discovery without scanning every file <sup>[[1]](#references)</sup>. These constraints demand external storage, a discovery mechanism, and a language-agnostic query system.
 
 ### Scope Principle
 
-Annotations are for metadata **that cannot be derived from reading source code**. If an agent can figure it out by parsing the file — a function is async, a parameter has a type, a class implements an interface — it doesn't need an annotation. The source code already says it.
+Annotations are for metadata **that cannot be derived from reading source code**. If an agent can figure it out by parsing the file (a function is async, a parameter has a type, a class implements an interface), it doesn't need an annotation. The source code already says it.
 
 What belongs in annotations:
-- **Ownership and audience** — who owns this, who should review it
-- **Performance contracts** — SLAs, tracing requirements
-- **Cache and data-flow recipes** — how to prefetch, invalidate, or preload
-- **Cross-boundary flows** — which frontend code calls which backend endpoint
-- **Architectural intent** — why this code exists, what invariants it maintains
-- **Lifecycle metadata** — deprecation intent, migration plans, stability level
-- **Business rules** — constraints that exist in requirements, not in code
+- **Ownership and audience**
+  - Who owns this, who should review it
+- **Performance contracts**
+  - Performance targets, tracing requirements
+- **Cache and data-flow recipes**
+  - How to prefetch, invalidate, or preload
+- **Cross-boundary flows**
+  - Which frontend code calls which backend endpoint
+- **Architectural intent**
+  - Why this code exists, what invariants it maintains
+- **Lifecycle metadata**
+  - Deprecation intent, migration plans, stability level
+- **Business rules**
+  - Constraints that exist in requirements, not in code
 
 This scope constraint keeps annotation files small, reduces maintenance burden, and ensures every annotation carries information an agent genuinely can't get elsewhere.
 
 ## Detailed Design
-[↩](#contents)
 
 ### Architecture
 
@@ -121,7 +124,7 @@ Three layers separate code understanding, metadata storage, and querying:
 └─────────────────────────────────────────────────┘
 ```
 
-**Code Resolver** (bottom) parses source files from any language into a universal code element tree. It handles language-specific syntax — Go's `func`, Python's `def`, TypeScript's arrow functions — and produces a uniform structure.
+**Code Resolver** (bottom) parses source files from any language into a universal code element tree. It handles language-specific syntax (Go's `func`, Python's `def`, TypeScript's arrow functions) and produces a uniform structure.
 
 **Annotation Store** (middle) manages external `.ann.yaml` sidecar files. Each annotation uses a code selector to anchor itself to a specific code element. The store validates annotations against the schema manifest and resolves anchors via the Code Resolver.
 
@@ -172,7 +175,7 @@ Code elements are the universal vocabulary for representing code constructs acro
 
 #### Universal Attributes
 
-These are **code element attributes** used in selectors to target code, not annotation attributes. They're derived by the Code Resolver from source — you use them to *anchor* annotations, not to store metadata an agent already has.
+These are **code element attributes** used in selectors to target code, not annotation attributes. They're derived by the Code Resolver from source; you use them to *anchor* annotations, not to store metadata an agent already has.
 
 | Attribute | Type | Applies to | Description |
 |-----------|------|-----------|-------------|
@@ -345,7 +348,7 @@ annotations:
 | `attrs` | map | no | Key-value attributes |
 | `children` | list | no | Nested annotations scoped to parent's code element |
 
-Children nest annotations within a scope — a component contains hooks, a hook contains fields. The child's selector is resolved within the parent's selected code element.
+Children nest annotations within a scope: a component contains hooks, a hook contains fields. The child's selector is resolved within the parent's selected code element.
 
 Attribute values can be strings, booleans, numbers, or expressions (strings containing `$N` positional bindings resolved at query time).
 
@@ -398,7 +401,7 @@ Available on all tags without manifest definition:
 
 The manifest enables: tag validation (known tags only), attribute validation (defined attrs only), type checking, required field enforcement, and enum value checking.
 
-### AQL — Agent Query Language
+### AQL (Agent Query Language)
 
 Full TypeScript interfaces are provided by the reference implementation.
 
@@ -440,7 +443,7 @@ aql.repair()
 //      suggestion: 'function[name="newName"]', confidence: 0.95 }]
 ```
 
-Repair uses heuristics from the Code Resolver: if a selector stopped matching and a similarly-structured element with a different name appeared, it suggests updating the selector. This is critical for long-term maintenance — validation catches drift, repair fixes it.
+Repair uses heuristics from the Code Resolver: if a selector stopped matching and a similarly-structured element with a different name appeared, it suggests updating the selector. This is critical for long-term maintenance: validation catches drift, repair fixes it.
 
 #### AnnotatedElement
 
@@ -460,79 +463,140 @@ Traversal: `closest(selector)`, `ancestors()`, `selectWithin(selector)`, `next(s
 Attribute access: `attr(name)` returns raw value, `resolve(attrName)` substitutes `$N` bindings, `binding(path)` extracts specific bindings.
 
 ## Drawbacks
-[↩](#contents)
 
-- **Selector drift.** A renamed function breaks its selector anchor. `aql.validate()` catches this in CI, and `aql.repair()` can suggest fixes, but neither eliminates the fundamental coupling between annotation selectors and code identifiers. This is the long-term maintenance risk.
-- **Nobody will maintain annotations.** Developers barely maintain inline comments. External sidecar files are additional work on every PR that changes annotated code. Without strong CI validation and repair tooling, annotation files rot.
-- **Agents improving at reading source.** Large context windows and better code understanding mean agents get progressively better at deriving information from source. The category of "non-derivable" metadata shrinks over time, though organizational metadata (ownership, SLAs, deprecation intent) will likely never be derivable.
-- **Code Resolver complexity.** Supporting every language requires language-specific parsers. Tree-sitter covers many languages but mapping each grammar to the universal element model is per-language work. If the Code Resolver is unreliable, selectors silently fail to match and the system becomes untrustworthy.
-- **Universal vocabulary limits.** Some constructs don't map cleanly (Go's channels, Rust's lifetimes, Python's comprehensions). `lang-hint` is an escape hatch, not a solution — cross-language queries over language-specific constructs are inherently lossy.
-- **Adoption chicken-and-egg.** No tooling exists → no repos have annotations → agents can't rely on them → no incentive to build tooling. Breaking this cycle requires the tooling and the spec to develop together.
-- **Another file to review.** PRs that change annotated code may also need sidecar updates. Reviewers must check both.
+- **Selector drift**
+  - A renamed function breaks its selector anchor
+  - `aql.validate()` catches this in CI, `aql.repair()` can suggest fixes
+  - Neither eliminates the fundamental coupling between annotation selectors and code identifiers
+  - This is the long-term maintenance risk
+- **Nobody will maintain annotations**
+  - Developers barely maintain inline comments
+  - External sidecar files are additional work on every PR that changes annotated code
+  - Without strong CI validation and repair tooling, annotation files rot
+- **Agents improving at reading source**
+  - Large context windows and better code understanding mean agents get progressively better at deriving information from source
+  - The category of "non-derivable" metadata shrinks over time
+  - Organizational metadata (ownership, performance targets, deprecation intent) will likely never be derivable
+- **Code Resolver complexity**
+  - Supporting every language requires language-specific parsers
+  - [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) covers many languages but mapping each grammar to the universal element model is per-language work
+  - If the Code Resolver is unreliable, selectors silently fail to match and the system becomes untrustworthy
+- **Universal vocabulary limits**
+  - Some constructs don't map cleanly (Go's channels, Rust's lifetimes, Python's comprehensions)
+  - `lang-hint` is an escape hatch, not a solution
+  - Cross-language queries over language-specific constructs are inherently lossy
+- **Adoption chicken-and-egg**
+  - No tooling exists → no repos have annotations → agents can't rely on them → no incentive to build tooling
+  - Breaking this cycle requires the tooling and the spec to develop together
+- **Another file to review**
+  - PRs that change annotated code may also need sidecar updates
+  - Reviewers must check both
 
 ## Alternatives
-[↩](#contents)
 
-Each alternative is documented with full rationale in the Decision Log <sup>[1]</sup>.
+Each alternative is documented with full rationale in the [Decision Log](../docs/decisions.md) <sup>[[1]](#references)</sup>
 
-- **Inline comment annotations** — merge conflicts, AI churn, no tag discovery <sup>[1, §1]</sup>
-- **Centralized annotation directory** — duplicates source tree, distance from code <sup>[1, §2]</sup>
-- **YAML vs JSON vs TOML** — JSON verbose, TOML poor nesting <sup>[1, §3]</sup>
-- **SQL / XPath / GraphQL queries** — right philosophy, wrong data model for trees <sup>[1, §4]</sup>
-- **Line-number anchoring** — breaks on every edit <sup>[1, §5]</sup>
-- **AST path anchoring** — breaks on reorder, requires AST knowledge <sup>[1, §5]</sup>
-- **Per-language tag vocabularies** — defeats cross-language queries <sup>[1, §6]</sup>
-- **Convention-based tag discovery** — ambiguous, requires scanning everything <sup>[1, §7]</sup>
+- **Inline comment annotations** <sup>[[1]](#references)</sup>
+  - Merge conflicts, AI churn, no tag discovery
+- **Centralized annotation directory** <sup>[[1]](#references)</sup>
+  - Duplicates source tree, distance from code
+- **YAML vs JSON vs TOML** <sup>[[1]](#references)</sup>
+  - JSON verbose, TOML poor nesting
+- **SQL / XPath / GraphQL queries** <sup>[[1]](#references)</sup>
+  - Right philosophy, wrong data model for trees
+- **Line-number anchoring** <sup>[[1]](#references)</sup>
+  - Breaks on every edit
+- **AST path anchoring** <sup>[[1]](#references)</sup>
+  - Breaks on reorder, requires AST knowledge
+- **Per-language tag vocabularies** <sup>[[1]](#references)</sup>
+  - Defeats cross-language queries
+- **Convention-based tag discovery** <sup>[[1]](#references)</sup>
+  - Ambiguous, requires scanning everything
 
 ## Adoption Strategy
-[↩](#contents)
 
-1. **Start with ownership and lifecycle metadata.** Before annotating behavior, annotate ownership (`owner`), audience, and visibility. This has immediate value and zero risk of duplicating source-derivable information.
-2. **Add a schema manifest** defining only the tags the project actually needs. Start small — 3-5 tags, not 20.
-3. **Annotate high-value boundaries first** — API endpoints that connect frontend to backend, hooks with non-obvious cache behavior, code with SLA requirements. Don't annotate everything.
-4. **Integrate validation in CI** — `aql.validate()` on PRs catches selector drift before it accumulates. `aql.repair()` suggests fixes.
-5. **Accept agent authorship.** Design annotation workflows assuming agents will write most annotations. The schema manifest constrains what they can write; validation ensures correctness.
+1. **Start with ownership and lifecycle metadata**
+   - Before annotating behavior, annotate ownership (`owner`), audience, and visibility
+   - Immediate value, zero risk of duplicating source-derivable information
+2. **Add a schema manifest**
+   - Define only the tags the project actually needs
+   - Start small: 3-5 tags, not 20
+3. **Annotate high-value boundaries first**
+   - API endpoints that connect frontend to backend
+   - Hooks with non-obvious cache behavior
+   - Code with performance requirements
+   - Don't annotate everything
+4. **Integrate validation in CI**
+   - `aql.validate()` on PRs catches selector drift before it accumulates
+   - `aql.repair()` suggests fixes
+5. **Accept agent authorship**
+   - Design annotation workflows assuming agents will write most annotations
+   - The schema manifest constrains what they can write; validation ensures correctness
 
-This is additive — no existing code changes, no migration, no breaking changes. Projects adopt incrementally. The [scope principle](#scope-principle) keeps the annotation surface small and maintainable.
+Additive: no existing code changes, no migration, no breaking changes; projects adopt incrementally; the [scope principle](#scope-principle) keeps the annotation surface small and maintainable
 
 ## How We Teach This
-[↩](#contents)
 
 The core mental model has two parts:
 
-1. **"CSS selectors, but for code"** — developers who know `div.class[attr="value"]` immediately understand `function[name="create",async]`.
-2. **The [scope principle](#scope-principle)** — the most important thing to teach, because without it, teams annotate everything and then maintain nothing.
+1. **"CSS selectors, but for code"**
+   - Developers who know `div.class[attr="value"]` immediately understand `function[name="create",async]`
+2. **The [scope principle](#scope-principle)**
+   - The most important thing to teach, because without it, teams annotate everything and then maintain nothing
 
-The annotation file format is YAML — no new syntax to learn. The schema manifest is similar to a JSON Schema or OpenAPI spec — define your vocabulary, validate against it.
+The annotation file format is YAML, no new syntax to learn. The schema manifest is similar to a JSON Schema or OpenAPI spec: define your vocabulary, validate against it.
 
 Key concepts to introduce in order:
 1. The [scope principle](#scope-principle)
-2. Code elements — the universal tags (function, class, method, etc.)
-3. Selectors — how to target code elements
-4. Annotation files — how to attach metadata externally
-5. Schema manifest — how to define your tag vocabulary
-6. AQL — how to query it all
+2. Code elements
+   - The universal tags (`function`, `class`, `method`, etc.)
+3. Selectors
+   - How to target code elements
+4. Annotation files
+   - How to attach metadata externally
+5. Schema manifest
+   - How to define your tag vocabulary
+6. AQL
+   - How to query it all
 
-The walkthrough <sup>[2]</sup> demonstrates the full system applied to Grafana's Go + TypeScript codebase.
+The [walkthrough](../docs/walkthrough.md) <sup>[[2]](#references)</sup> demonstrates the full system applied to Grafana's Go + TypeScript codebase.
 
 ## Unresolved Questions
-[↩](#contents)
 
-- **Code Resolver implementation.** The spec defines what the Code Resolver produces but not how. Tree-sitter is the obvious candidate (grammar coverage across 100+ languages), but the mapping from tree-sitter AST nodes to universal code elements is per-language work that needs to be specified or prototyped. Without a working Code Resolver, the selector syntax is theoretical.
-- **Repair heuristics.** `aql.repair()` needs to detect renames, moves, and restructurings. What confidence threshold should trigger auto-repair vs. manual review? How does repair work across major refactors that change code structure, not just names?
-- **Who writes annotations.** The system is designed for human authorship but will likely be agent-maintained in practice. How should agents generate annotations deterministically to avoid churn? Should there be a canonical serialization to minimize diffs?
-- **Scope boundary enforcement.** The scope principle says "don't annotate derivable facts." But derivability depends on the agent's capabilities, which improve over time. Is there a formal rule, or is this a judgment call per project?
-- **Selector specificity.** When multiple selectors match, what are the precedence rules? Should CSS specificity rules apply directly?
-- **Cross-file annotations.** Can an annotation in one sidecar reference code in another file? What about annotations spanning module boundaries?
-- **Schema inheritance.** Should manifests support extending other manifests (e.g., a base schema for React projects)?
-- **Annotation versioning.** When the schema manifest changes (tags added, removed, renamed), how are existing annotation files migrated?
-- **Performance characteristics.** For large codebases with thousands of annotation files, what indexing or caching strategies should the AQL implementation use?
+- **Code Resolver implementation**
+  - The spec defines what the Code Resolver produces but not how
+  - Tree-sitter is the obvious candidate (grammar coverage across 100+ languages)
+  - Mapping from Tree-sitter AST nodes to universal code elements is per-language work that needs to be specified or prototyped
+  - Without a working Code Resolver, the selector syntax is theoretical
+- **Repair heuristics**
+  - `aql.repair()` needs to detect renames, moves, and restructurings
+  - What confidence threshold should trigger auto-repair vs manual review?
+  - How does repair work across major refactors that change code structure, not just names?
+- **Who writes annotations**
+  - The system is designed for human authorship but will likely be agent-maintained in practice
+  - How should agents generate annotations deterministically to avoid churn?
+  - Should there be a canonical serialization to minimize diffs?
+- **Scope boundary enforcement**
+  - The scope principle says "don't annotate derivable facts"
+  - Derivability depends on the agent's capabilities, which improve over time
+  - Is there a formal rule, or is this a judgment call per project?
+- **Selector specificity**
+  - When multiple selectors match, what are the precedence rules?
+  - Should CSS specificity rules apply directly?
+- **Cross-file annotations**
+  - Can an annotation in one sidecar reference code in another file?
+  - What about annotations spanning module boundaries?
+- **Schema inheritance**
+  - Should manifests support extending other manifests (e.g., a base schema for React projects)?
+- **Annotation versioning**
+  - When the schema manifest changes (tags added, removed, renamed), how are existing annotation files migrated?
+- **Performance characteristics**
+  - For large codebases with thousands of annotation files, what indexing or caching strategies should the AQL implementation use?
 
 ---
 
 ## References
-[↩](#contents)
 
-1. [Decision Log](../docs/decisions.md) — design decisions, alternatives considered, and rationale
-2. [Walkthrough](../docs/walkthrough.md) — Grafana case study (Go + TypeScript)
-3. TypeScript Interfaces — `AQL`, `AnnotatedElement`, `CodeElement` type definitions (see reference implementation)
+1. **^** ["Decision Log"](../docs/decisions.md), design decisions, alternatives considered, and rationale
+2. **^** ["Walkthrough: Grafana"](../docs/walkthrough.md), applied to Grafana's Go + TypeScript codebase
+3. **^** TypeScript Interfaces, `AQL`, `AnnotatedElement`, `CodeElement` type definitions (reference implementation)

@@ -4,9 +4,15 @@
 
 ---
 
-This walkthrough demonstrates the Agent Annotation Schema applied to [Grafana](https://github.com/grafana/grafana) (65k+ stars) — a large-scale observability platform with a **Go backend** and a **TypeScript/React frontend** in the same monorepo.
+This walkthrough demonstrates the [Agent Annotation Schema](../text/0001-agent-annotation-schema.md) applied to [Grafana](https://github.com/grafana/grafana) (65k+ stars), a large-scale observability platform with a **Go backend** and a **TypeScript/React frontend** in the same monorepo
 
-The focus is on non-derivable metadata <sup>[1]</sup>: ownership, cross-boundary flows, performance contracts, authorization scopes, deprecation intent, and architectural context.
+The focus is on non-derivable metadata <sup>[[1]](#references)</sup>:
+- Ownership
+- Cross-boundary flows
+- Performance contracts
+- Authorization scopes
+- Deprecation intent
+- Architectural context
 
 ## Contents
 
@@ -21,7 +27,6 @@ The focus is on non-derivable metadata <sup>[1]</sup>: ownership, cross-boundary
 ---
 
 ## Repository Structure (relevant parts)
-[↩](#contents)
 
 ```
 grafana/
@@ -47,9 +52,8 @@ grafana/
 ---
 
 ## Step 1: Define the Schema Manifest
-[↩](#contents)
 
-The manifest defines only tags carrying non-derivable metadata — ownership, flows, contracts, and architectural context.
+The manifest defines only tags carrying non-derivable metadata: ownership, flows, contracts, and architectural context
 
 ```yaml
 # .annotations/schema.yaml
@@ -153,7 +157,6 @@ visibilities:
 ---
 
 ## Step 2: Annotate the Go Backend
-[↩](#contents)
 
 ### Dashboard HTTP Handlers
 
@@ -241,7 +244,7 @@ annotations:
       audience: security
 ```
 
-### Route Registration — Authorization Scopes
+### Route Registration: Authorization Scopes
 
 The route registration in `api.go` wires handlers to paths with authorization middleware. An agent can see `authorize(ac.EvalPermission(...))` in source, but the **scope expression** and its meaning aren't obvious without domain knowledge.
 
@@ -288,11 +291,10 @@ annotations:
 ---
 
 ## Step 3: Annotate the TypeScript Frontend
-[↩](#contents)
 
 ### API Client
 
-The source shows a factory function returning versioned clients. The annotation documents the **cross-boundary flow** — which backend endpoint this frontend code connects to:
+The source shows a factory function returning versioned clients. The annotation documents the **cross-boundary flow**: which backend endpoint this frontend code connects to
 
 ```typescript
 // public/app/features/dashboard/api/dashboard_api.ts (simplified)
@@ -422,7 +424,6 @@ annotations:
 ---
 
 ## Step 4: Query Across Both Languages
-[↩](#contents)
 
 Every annotation above carries information that isn't in source code. Here's what queries can answer:
 
@@ -447,7 +448,7 @@ const clients = aql.select('api-client[method="POST"]');
 // → [{ attrs: { endpoint: "/api/dashboards/db" }, code: useSaveDashboardMutation() }]
 ```
 
-The agent matched frontend to backend by endpoint path — a cross-boundary flow that exists implicitly across an HTTP boundary but is never expressed in either codebase.
+The agent matched frontend to backend by endpoint path, a cross-boundary flow that exists implicitly across an HTTP boundary but is never expressed in either codebase
 
 ### "What authorization does the dashboard save endpoint require?"
 
@@ -465,7 +466,7 @@ const critical = aql.select('perf-critical[sla]');
 // → [{ attrs: { sla: "200ms p99", traced: true }, code: getDashboardHelper }]
 ```
 
-SLAs are business requirements, not code facts. An agent reading the source sees a function call — not that it has a 200ms p99 contract.
+Performance targets are business requirements, not code facts. An agent reading the source sees a function call, not that it has a 200ms p99 contract
 
 ### "Show me the full save flow from UI to database"
 
@@ -490,7 +491,7 @@ const middleware = aql.select('middleware[scope*="dashboards:write"]');
 // → authorization with dashboards:write scope
 ```
 
-The agent traced the entire flow — React component → custom hook → API call → Go handler → authorization middleware — using only annotation queries. Every piece of information (endpoint paths, auth scopes, ownership, SLAs) came from annotations, not source scanning.
+The agent traced the entire flow (React component → custom hook → API call → Go handler → authorization middleware) using only annotation queries. Every piece of information (endpoint paths, auth scopes, ownership, performance targets) came from annotations, not source scanning
 
 ### "What code is relevant to the security team?"
 
@@ -502,22 +503,24 @@ const security = aql.select('[audience="security"]');
 ---
 
 ## What This Demonstrates
-[↩](#contents)
 
-1. **Every annotation carries non-derivable information.** Ownership, SLAs, authorization scopes, cross-boundary flows, deprecation intent, architectural notes — none of this exists in source code.
-
-2. **Same query syntax across Go and TypeScript** — `aql.select('[owner="@grafana/dashboards-squad"]')` returns results from both languages in the same shape.
-
-3. **Cross-language flow tracing** — An agent follows a user action from React through an HTTP boundary into Go using endpoint path matching, without reading source.
-
-4. **Tag discovery via manifest** — The agent read `.annotations/schema.yaml` once and knew every queryable tag before touching any source file.
-
-5. **External annotations, clean source** — Every `.go` and `.tsx` file is annotation-free. The metadata lives in sidecar files.
-
-6. **Audience-based filtering** — Security, infrastructure, and product teams each see only what's relevant to them.
+1. **Every annotation carries non-derivable information**
+   - Ownership, authorization scopes, cross-boundary flows, deprecation intent, architectural notes
+   - None of this exists in source code
+2. **Same query syntax across Go and TypeScript**
+   - `aql.select('[owner="@grafana/dashboards-squad"]')` returns results from both languages in the same shape
+3. **Cross-language flow tracing**
+   - Agent follows a user action from React through an HTTP boundary into Go using endpoint path matching
+   - No source reading required
+4. **Tag discovery via manifest**
+   - Agent read `.annotations/schema.yaml` once and knew every queryable tag before touching any source file
+5. **External annotations, clean source**
+   - Every `.go` and `.tsx` file is annotation-free
+   - Metadata lives in sidecar files
+6. **Audience-based filtering**
+   - Security, infrastructure, and product teams each see only what's relevant to them
 
 ## References
-[↩](#contents)
 
-1. [Agent Annotation Schema — RFC](../text/0001-agent-annotation-schema.md) — full specification (scope principle, selectors, AQL)
-2. [Decision Log](./decisions.md) — design decisions and alternatives considered
+1. **^** ["Agent Annotation Schema — RFC"](../text/0001-agent-annotation-schema.md), full specification (scope principle, selectors, AQL)
+2. **^** ["Decision Log"](./decisions.md), design decisions and alternatives considered

@@ -4,7 +4,7 @@
 
 ---
 
-Source files in three languages with `.ann.yaml` sidecar annotation files. Each annotation carries metadata that cannot be derived from reading the source code — ownership, performance SLAs, cache recipes, architectural context.
+Source files in three languages with `.ann.yaml` sidecar annotation files. Each annotation carries metadata that cannot be derived from reading the source code: ownership, performance targets, cache recipes, architectural context
 
 ## Schema Manifest
 

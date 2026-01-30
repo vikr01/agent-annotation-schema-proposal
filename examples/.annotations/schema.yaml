@@ -26,7 +26,7 @@ tags:
         description: "Cache key reference for invalidation"
       error-handling:
         type: enum
-        values: [throws, catches, propagates]
+        values: [throws, catches, propagates, silent]
         description: "How errors are handled (not always obvious from source)"
 
   controller:
@@ -54,11 +54,11 @@ tags:
         description: "Version or date when this endpoint will be removed"
 
   perf-critical:
-    description: "Performance-sensitive code with SLA or tracing requirements"
+    description: "Performance-sensitive code with target or tracing requirements"
     attrs:
-      sla:
+      target:
         type: string
-        description: "Performance SLA (e.g., '200ms p99')"
+        description: "Performance target (e.g., '200ms', '50ms for 10k items')"
       traced:
         type: boolean
         description: "Whether distributed tracing is enabled"
