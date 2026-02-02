@@ -1,6 +1,0 @@
-{
-  "name": "agent-annotation-schema-proposal",
-  "description": "A proposal for structured, language-agnostic code annotations stored externally and queryable via CSS-like selectors.",
-  "private": true,
-  "license": "MIT"
-}

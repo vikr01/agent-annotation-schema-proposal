@@ -1,10 +1,10 @@
 # Real-World Walkthrough: Grafana
 
-[← Docs](./README.md) · [Home](../README.md)
+[← Home](./README.md)
 
 ---
 
-This walkthrough demonstrates the [Agent Annotation Schema](../text/0001-agent-annotation-schema.md) applied to [Grafana](https://github.com/grafana/grafana) (65k+ stars), a large-scale observability platform with a **Go backend** and a **TypeScript/React frontend** in the same monorepo
+This walkthrough demonstrates the [Agent Annotation Schema](./SPEC.md) applied to [Grafana](https://github.com/grafana/grafana) (65k+ stars), a large-scale observability platform with a **Go backend** and a **TypeScript/React frontend** in the same monorepo
 
 The focus is on non-derivable metadata <sup>[[1]](#references)</sup>:
 - Ownership
@@ -45,8 +45,8 @@ grafana/
           SaveDashboard/
             SaveDashboardDrawer.tsx   ← Save UI component
             useDashboardSave.tsx      ← Save hook (API call)
-  .annotations/
-    schema.yaml                      ← Schema manifest
+  .config/
+    aql.yaml                         ← Schema manifest
 ```
 
 ---
@@ -56,7 +56,7 @@ grafana/
 The manifest defines only tags carrying non-derivable metadata: ownership, flows, contracts, and architectural context
 
 ```yaml
-# .annotations/schema.yaml
+# .config/aql.yaml
 version: "1.0"
 
 tags:
@@ -513,7 +513,7 @@ const security = aql.select('[audience="security"]');
    - Agent follows a user action from React through an HTTP boundary into Go using endpoint path matching
    - No source reading required
 4. **Tag discovery via manifest**
-   - Agent read `.annotations/schema.yaml` once and knew every queryable tag before touching any source file
+   - Agent read `.config/aql.yaml` once and knew every queryable tag before touching any source file
 5. **External annotations, clean source**
    - Every `.go` and `.tsx` file is annotation-free
    - Metadata lives in sidecar files
@@ -522,5 +522,5 @@ const security = aql.select('[audience="security"]');
 
 ## References
 
-1. **^** ["Agent Annotation Schema — RFC"](../text/0001-agent-annotation-schema.md), full specification (scope principle, selectors, AQL)
-2. **^** ["Decision Log"](./decisions.md), design decisions and alternatives considered
+1. **^** ["Agent Annotation Schema — RFC"](./SPEC.md), full specification (scope principle, selectors, AQL)
+2. **^** ["Decision Log"](./DECISIONS.md), design decisions and alternatives considered

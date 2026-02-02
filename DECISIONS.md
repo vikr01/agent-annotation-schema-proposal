@@ -1,15 +1,19 @@
 # Decision Log
 
-[← Docs](./README.md) · [Home](../README.md)
+[← Home](./README.md)
 
 ---
 
-Design decisions for the [Agent Annotation Schema](../text/0001-agent-annotation-schema.md), ordered latest to earliest
+Design decisions for the [Agent Annotation Schema](./SPEC.md), ordered latest to earliest
 
 Each entry documents context, options considered, decision, and rationale
 
 ## Contents
 
+- [13. Implementation Language: Rust vs TypeScript](#13-implementation-language-rust-vs-typescript)
+- [12. MCP Server: One Per Project, Annotation-Only Queries Skip Parsing](#12-mcp-server-one-per-project-annotation-only-queries-skip-parsing)
+- [11. Code Resolver: Adapter Pattern with Parser Auto-Detection](#11-code-resolver-adapter-pattern-with-parser-auto-detection)
+- [10. Project Configuration: `.config/aql.yaml` vs `.annotations/schema.yaml`](#10-project-configuration-configaqlyaml-vs-annotationsschemayaml)
 - [9. Selector Drift: Validation + Repair vs Validation Only](#9-selector-drift-validation--repair-vs-validation-only)
 - [8. Annotation Scope: Non-Derivable Metadata Only](#8-annotation-scope-non-derivable-metadata-only)
 - [7. Tag Discovery: Schema Manifest vs Convention vs Scanning](#7-tag-discovery-schema-manifest-vs-convention-vs-scanning)
@@ -20,6 +24,243 @@ Each entry documents context, options considered, decision, and rationale
 - [2. Sidecar Files vs Centralized Store](#2-sidecar-files-vs-centralized-store)
 - [1. Inline Comments vs External Annotation Files](#1-inline-comments-vs-external-annotation-files)
 - [References](#references)
+
+---
+
+## 13. Implementation Language: Rust vs TypeScript
+
+**Context**: The reference implementation needs a language. The early design assumed TypeScript (the RFC shows `npx` invocations, `aql.select()` TypeScript examples, and the Code Resolver discussion centers on Babel/TypeScript compiler adapters). The question is whether TypeScript is the right choice for the shipping implementation.
+
+**Options considered**:
+
+| Option | Description |
+|--------|-------------|
+| TypeScript (Node.js) | Natural fit for the JS ecosystem; direct access to Babel, TypeScript compiler, ESLint parsers |
+| Rust | Single static binary; no runtime; fast startup; tree-sitter for parsing |
+| Go | Static binary; good CLI tooling ecosystem; simpler than Rust |
+
+**Decision**: Rust
+
+**Rationale**:
+
+- Zero-dependency distribution
+  - The MCP server is a single static binary — no Node.js, no `npx`, no `node_modules`
+  - Users install via `brew install`, `curl | sh`, or download one file
+  - MCP hosts launch it directly: `"command": "aql-mcp-server"` — no runtime wrapper
+  - This matters because MCP servers are spawned as subprocesses by host apps; requiring Node.js adds a dependency that not every environment has
+- Startup time
+  - MCP servers are short-lived subprocesses spawned per-session
+  - A Rust binary starts in single-digit milliseconds; a Node.js process with `npx` resolution takes hundreds of milliseconds to seconds
+  - For `aql_select` (the most common operation), the entire round-trip — startup, YAML index load, selector parse, query, response — should be imperceptible
+- tree-sitter for Code Resolvers
+  - tree-sitter grammars exist for every major language, are written in C, and have first-class Rust bindings
+  - A single resolver framework covers Rust, Go, TypeScript, Python, Java, etc. without pulling in each language's native toolchain
+  - The TypeScript approach would require Babel for JS/TS, a Go parser for Go, a Python parser for Python — each with its own runtime and dependency chain
+  - tree-sitter trades some fidelity (it doesn't understand type-level semantics) for universal coverage; for AQL's purposes (extracting functions, structs, classes, and their names/visibility/modifiers), this is sufficient
+- Correctness guarantees
+  - Rust's type system and ownership model eliminate classes of bugs (null pointer dereferences, data races, use-after-free) that would require runtime discipline in TypeScript or Go
+  - The `CodeResolver` trait enforces a consistent interface across all language adapters at compile time
+- Cross-platform
+  - cargo-dist produces binaries for macOS (ARM + x86), Linux (glibc + musl, ARM + x86) from a single CI workflow
+  - No platform-specific Node.js native module issues
+
+**What we ruled out**:
+
+- TypeScript
+  - Would have direct access to the TypeScript compiler and Babel, making JS/TS resolution trivially correct
+  - But requires Node.js at runtime, which is a hard dependency for a tool that should work in any environment
+  - Startup overhead matters for short-lived MCP subprocesses
+  - Using tree-sitter from Rust for JS/TS parsing sacrifices some type-level fidelity but avoids the Node.js runtime dependency entirely
+- Go
+  - Also produces static binaries with fast startup
+  - tree-sitter bindings exist but are less mature than Rust's
+  - Rust was preferred for its stronger type system guarantees and the existing tree-sitter ecosystem
+
+**Trade-offs accepted**: The TypeScript/Babel resolver path would produce higher-fidelity code elements for JS/TS files (full type resolution, decorator metadata, Flow support). tree-sitter-based resolution is structural only — it sees syntax, not types. For AQL's use case (anchoring annotations to named code elements), structural parsing is sufficient. If full type resolution becomes necessary, a future TypeScript resolver could run as a separate optional adapter.
+
+---
+
+## 12. MCP Server: One Per Project, Annotation-Only Queries Skip Parsing
+
+**Context**: Agents need a way to query annotations without importing a library. The MCP (Model Context Protocol) provides a standard tool-calling interface over stdio that any MCP-compatible host (Claude Desktop, Claude Code, etc.) can use. The question is how to structure the server: one per workspace vs one per project, and which operations require source code parsing.
+
+**Options considered**:
+
+| Option | Description |
+|--------|-------------|
+| Single server, multi-project | One server handles multiple projects via a `project` parameter per request |
+| One server per project | Separate server instance for each project, scoped via `--project` flag at startup |
+| Library-only (no server) | Agents import AQL directly, no MCP layer |
+
+**Decision**: One MCP server per project. Annotation-only queries (`aql_select`, `aql_schema`, `aql_validate`, `aql_repair`) never parse source code. Only `aql_select_annotated` parses source, and only for a single file.
+
+**Architecture**:
+
+```
+Agent (Claude Desktop / Claude Code)
+  │
+  ▼
+MCP stdio transport
+  │
+  ▼
+aql-mcp-server --project /path/to/project
+  │
+  ├── Startup: parse .config/aql.yaml, index all .ann.yaml → memory
+  │
+  ├── aql_schema          → return manifest (no parsing)
+  ├── aql_select           → query annotation index (no parsing)
+  ├── aql_select_annotated → parse source file + match annotations (single file)
+  ├── aql_validate         → check annotations vs schema (no parsing)
+  └── aql_repair           → suggest selector fixes (no parsing for basic, source for advanced)
+```
+
+**Rationale**:
+
+- One server per project
+  - Eliminates ambiguity about which project a query targets
+  - The `--project` flag at startup scopes everything; no per-request routing
+  - Multi-project setups use multiple MCP server instances, which host apps already support
+  - Keeps the server stateless within a project (one manifest, one annotation index)
+- Annotation queries skip source parsing
+  - `aql_select` is the most common operation: "find all controllers", "find all code owned by @backend"
+  - These queries only need annotation data (`.ann.yaml` files), not source code
+  - Building the full annotation index at startup (pure YAML parsing) makes all `aql_select` calls O(n) over the index, not O(files × parse time)
+  - Source parsing is expensive and language-specific; keeping it out of the common path means the server works for any language even before a resolver adapter exists
+- Code queries are per-file only
+  - `aql_select_annotated` requires parsing source, which is expensive
+  - Requiring a `file` parameter bounds the cost: parse one file, not the whole project
+  - This matches real agent workflows: the agent already knows which file it's looking at and wants to know what annotations exist on specific code elements
+
+**What we ruled out**: Single multi-project server adds routing complexity with no benefit (MCP hosts already handle multiple servers); library-only approach requires agents to have a Node.js runtime and import AQL, which not all MCP clients support
+
+**Impact**: This decision introduces 5 MCP tools as the primary agent interface. The Rust library API (`aql-engine`) remains available for programmatic use, CI integration, and build tool plugins.
+
+---
+
+## 11. Code Resolver: Adapter Pattern with Parser Auto-Detection
+
+**Context**: The Code Resolver parses source files into universal CodeElements. This raises several interrelated problems:
+
+- Different projects use different syntax configurations (TypeScript vs Flow, with or without decorators, JSX, etc.)
+- Agents use AQL across multiple projects on the filesystem, each configured differently
+- New file extensions and syntax features can appear at any time; file extensions alone don't indicate syntax (`.js` could be Flow, plain JavaScript, or JSX)
+- Build tools, editors, and linters already parse source code; re-parsing wastes work and risks inconsistency
+- Syntax is composable: JavaScript + JSX + Flow + decorators are independent layers, and projects combine them differently
+
+**Options considered**:
+
+| Option | Description |
+|--------|-------------|
+| Custom parsers per language | Build AQL-specific parsers for each language |
+| Tree-sitter exclusively | Use Tree-sitter grammars for all languages |
+| Adapter pattern | Delegate to existing parsers, transform their AST → CodeElement |
+| Permissive fallback only | Always parse with all syntax plugins enabled |
+
+**Decision**: Adapter pattern with project-level parser auto-detection
+
+**Architecture**:
+
+```
+Source Code
+  │
+  ▼
+Detect project root (walk up to .config/aql.yaml)
+  │
+  ▼
+Discover parser config (tsconfig.json, .babelrc, .flowconfig, etc.)
+  │
+  ▼
+Existing Parser (Babel, TypeScript compiler, Tree-sitter, etc.)
+  │
+  ▼
+Language-specific AST
+  │
+  ▼
+AQL Resolver (thin adapter)
+  │
+  ▼
+Universal CodeElement
+```
+
+**Rationale**:
+
+- Resolvers are adapters, not parsers
+  - They delegate to battle-tested parsers (Babel, TypeScript compiler, Tree-sitter, etc.)
+  - They transform the resulting AST into AQL's universal CodeElement model
+  - AQL does not re-implement parsing
+- Project config auto-detection
+  - Walk up from file to find project root (`.config/aql.yaml`, falling back to `.git`/`package.json`)
+  - Discover parser configuration from existing project files:
+    - `tsconfig.json` → TypeScript parser with project settings
+    - `.babelrc` / `babel.config.js` → Babel parser with configured plugins
+    - `.flowconfig` → Flow parser
+  - Cache discovered config per project root
+- Syntax is composable and must be respected
+  - JavaScript syntax varies by project: base ES version + JSX + Flow or TypeScript + decorators + pipeline operator + ...
+  - Each extension layers on top of the base language
+  - If a project's `.babelrc` includes `@babel/plugin-syntax-decorators`, AQL uses that same configuration
+  - This principle extends to any language: Rust editions, Go versions, Python type annotation styles
+- File extensions are unreliable
+  - `.js` could be plain JavaScript, Flow, or JSX depending on project config
+  - New extensions can emerge (e.g., a hypothetical `.fts` with novel syntax layered on TypeScript)
+  - The resolver must parse unknown extensions correctly for the syntax features it does recognize, without breaking on syntax it doesn't
+  - Parser configuration comes from the project, not the file extension
+- Integrations can provide pre-parsed ASTs
+  - Build tools (webpack, Vite) already have ASTs during compilation
+  - Editors (VS Code, via LSP) already have ASTs from the language service
+  - Linters (ESLint) already have ASTs from their parser
+  - AQL integrations can bypass the parsing step entirely by providing an existing AST
+  - The resolver accepts either a file path (parse it) or a pre-parsed AST (transform it directly)
+- Graceful fallback
+  - If no project config is found, use a permissive parser (e.g., Babel with common syntax plugins enabled)
+  - Warn when falling back so the user knows config was not auto-detected
+
+**What we ruled out**: Custom parsers per language re-invent solved problems at massive scope; Tree-sitter exclusively doesn't respect project-specific syntax configuration (Babel plugins, TypeScript compiler options); relying on file extensions alone breaks on `.js` files with Flow, projects with custom extensions, and any future syntax layering
+
+---
+
+## 10. Project Configuration: `.config/aql.yaml` vs `.annotations/schema.yaml`
+
+**Context**: The schema manifest needs a canonical location in the project. Originally proposed at `.annotations/schema.yaml` in the project root ([Decision 7](#7-tag-discovery-schema-manifest-vs-convention-vs-scanning)). A growing ecosystem convention places tool configuration in a `.config/` directory to reduce root-level clutter <sup>[[7]](#references)</sup>.
+
+**Options considered**:
+
+| Option | Description |
+|--------|-------------|
+| `.annotations/schema.yaml` | Schema lives in the annotation directory alongside data |
+| `.config/aql.yaml` | Follows the `.config/` convention; separates config from annotation data |
+| Support both | Auto-discover whichever exists |
+
+**Decision**: `.config/aql.yaml` for project configuration; `.ann.yaml` sidecars for annotation data. Integrations can override config discovery via callbacks.
+
+**Default behavior**: AQL always looks for `.config/aql.yaml`. Walk up from the file being queried, stop at the first directory containing `.config/aql.yaml`. That directory is the project root.
+
+**Custom discovery**: Integrations that need a different location (e.g., a build tool embedding AQL config inside its own config, or an editor with workspace-level settings) can provide a callback to override config resolution. The core library does not search multiple locations or guess — it uses `.config/aql.yaml` unless told otherwise programmatically.
+
+**Rationale**:
+
+- Separation of concerns
+  - Project configuration (schema definitions, resolver settings, workspace includes) is fundamentally different from annotation data (`.ann.yaml` sidecars next to source files)
+  - Mixing them in `.annotations/` conflates tooling config with the data it governs
+- `.config/` is the emerging standard
+  - Tools using cosmiconfig/lilconfig already support `.config/` (e.g., Stylelint)
+  - ESLint has an active proposal for `.config/` support <sup>[[7]](#references)</sup>
+  - Placing AQL config here aligns with the ecosystem direction
+- Reduces root clutter
+  - One `.config/` directory shared across tools, rather than each tool adding its own dotfile or dotdir to the project root
+- One canonical location, extensible via code
+  - No ambiguity about which file takes precedence — it's always `.config/aql.yaml`
+  - Integrations that genuinely need a different location hook in via callback, keeping the default simple and predictable
+  - This avoids cosmiconfig-style multi-location search where users must reason about which of several files is actually being read
+- Natural home for future configuration
+  - Resolver settings, workspace includes for monorepos, CI validation options, and schema inheritance (`extends`) all belong in project config, not in the annotation data directory
+- Project boundary marker
+  - `.config/aql.yaml` serves as the project root marker for walk-up discovery (same algorithm as `tsconfig.json`, `Cargo.toml`, `go.mod`)
+  - When an agent queries a file, AQL walks up parent directories until it finds `.config/aql.yaml`
+
+**What we ruled out**: `.annotations/schema.yaml` mixes configuration with data; cosmiconfig-style multi-location search introduces ambiguity about which file is authoritative
+
+**Impact on previous decisions**: This supersedes the location specified in [Decision 7](#7-tag-discovery-schema-manifest-vs-convention-vs-scanning); the schema manifest concept remains unchanged, only its file path changes from `.annotations/schema.yaml` to `.config/aql.yaml`
 
 ---
 
@@ -50,7 +291,7 @@ Each entry documents context, options considered, decision, and rationale
 
 **What we ruled out**: Automatic rewrite is too aggressive for structural changes where the "correct" update is ambiguous; validation-only is too passive for real-world maintenance
 
-See the [AQL specification](../text/0001-agent-annotation-schema.md#aql--agent-query-language) for the repair API
+See the [AQL specification](./SPEC.md#aql-agent-query-language) for the repair API
 
 ---
 
@@ -81,13 +322,15 @@ See the [AQL specification](../text/0001-agent-annotation-schema.md#aql--agent-q
   - When every annotation carries information that genuinely can't be found in source, the schema is worth maintaining
   - When annotations mix derivable and non-derivable facts, signal-to-noise drops and teams stop maintaining them
 
-See the RFC's [Scope Principle](../text/0001-agent-annotation-schema.md#scope-principle) for the canonical definition
+See the RFC's [Scope Principle](./SPEC.md#scope-principle) for the canonical definition
 
 **What we ruled out**: "Annotate everything" creates unsustainable maintenance burden; "hybrid with convenience flags" blurs the scope boundary and invites scope creep
 
 ---
 
 ## 7. Tag Discovery: Schema Manifest vs Convention vs Scanning
+
+> **Note**: The manifest location has been updated from `.annotations/schema.yaml` to `.config/aql.yaml`; see [Decision 10](#10-project-configuration-configaqlyaml-vs-annotationsschemayaml)
 
 **Context**: When an agent encounters a project, how does it know what annotation tags are available to query?
 
@@ -117,7 +360,7 @@ See the RFC's [Scope Principle](../text/0001-agent-annotation-schema.md#scope-pr
 
 **What we ruled out**: Convention-based discovery is ambiguous; file scanning defeats the purpose of structured metadata (you still have to read everything); hardcoded built-ins are too rigid for diverse codebases
 
-See the [Schema Manifest specification](../text/0001-agent-annotation-schema.md#schema-manifest) for details
+See the [Schema Manifest specification](./SPEC.md#schema-manifest) for details
 
 ---
 
@@ -148,7 +391,7 @@ See the [Schema Manifest specification](../text/0001-agent-annotation-schema.md#
 
 **What we ruled out**: Per-language tags make cross-language queries impossible (the core value proposition); universal-only (no escape hatch) is too rigid for languages with genuinely unique constructs
 
-See [Code Elements](../text/0001-agent-annotation-schema.md#code-elements) for the full universal vocabulary
+See [Code Elements](./SPEC.md#code-elements) for the full universal vocabulary
 
 ---
 
@@ -354,7 +597,7 @@ SQL's strength, joins and aggregations, covers the 20% case: cross-file flow mat
 
 The declarative principle behind SQL, describe what you want not how to find it, is exactly right, and the annotation schema adopts it fully; the difference is the data model: SQL assumes tables, CSS assumes trees; annotations are trees
 
-**Extensions over standard CSS**: Param-list matching (`params=(foo, bar=10)`) and `$N` positional bindings extend CSS selectors for code-specific needs; see the [Selector Syntax specification](../text/0001-agent-annotation-schema.md#selector-syntax)
+**Extensions over standard CSS**: Param-list matching (`params=(foo, bar=10)`) and `$N` positional bindings extend CSS selectors for code-specific needs; see the [Selector Syntax specification](./SPEC.md#selector-syntax)
 
 **What we ruled out**:
 - SQL
@@ -475,9 +718,10 @@ The declarative principle behind SQL, describe what you want not how to find it,
 
 ## References
 
-1. **^** ["Agent Annotation Schema — RFC"](../text/0001-agent-annotation-schema.md), full specification (scope principle, code elements, selectors, AQL)
-2. **^** ["Walkthrough: Grafana"](./walkthrough.md), applied to Grafana's Go + TypeScript codebase
+1. **^** ["Agent Annotation Schema — RFC"](./SPEC.md), full specification (scope principle, code elements, selectors, AQL)
+2. **^** ["Walkthrough: Grafana"](./WALKTHROUGH.md), applied to Grafana's Go + TypeScript codebase
 3. **^** Codd, E. F., ["A Relational Model of Data for Large Shared Data Banks"](https://doi.org/10.1145/362384.362685), *Communications of the ACM* 13, no. 6 (June 1970): 377-387
 4. **^** Chamberlin, D. D. and R. F. Boyce, ["SEQUEL: A Structured English Query Language"](https://doi.org/10.1145/800296.811515), *Proceedings of the 1974 ACM SIGFIDET Workshop*, 249-264
 5. **^** Chamberlin, D. D., ["Early History of SQL"](https://doi.org/10.1109/MAHC.2012.61), *IEEE Annals of the History of Computing* 34, no. 4 (Oct-Dec 2012): 78-82
 6. **^** International Organization for Standardization, [*ISO/IEC 9075:2023 — Database languages SQL*](https://www.iso.org/standard/76583.html), 9th ed., Geneva: ISO, 2023
+7. **^** ["Change Request: Support `.config` directory"](https://github.com/eslint/eslint/issues/18294), ESLint issue #18294; see also [cosmiconfig](https://github.com/cosmiconfig/cosmiconfig) which supports `.config/` by default

@@ -2,7 +2,7 @@
 - RFC PR: (leave this empty)
 - Issue: (leave this empty)
 
-[← Docs](../docs/) · [Home](../README.md)
+[← Home](./README.md)
 
 # Agent Annotation Schema
 
@@ -12,6 +12,7 @@
 - [Basic Example](#basic-example)
 - [Motivation](#motivation)
 - [Detailed Design](#detailed-design)
+  - [MCP Server](#mcp-server)
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
 - [Adoption Strategy](#adoption-strategy)
@@ -124,9 +125,9 @@ Three layers separate code understanding, metadata storage, and querying:
 └─────────────────────────────────────────────────┘
 ```
 
-**Code Resolver** (bottom) parses source files from any language into a universal code element tree. It handles language-specific syntax (Go's `func`, Python's `def`, TypeScript's arrow functions) and produces a uniform structure.
+**Code Resolver** (bottom) transforms source files from any language into a universal code element tree. Rather than implementing its own parsers, it delegates to existing ones (Babel, TypeScript compiler, Tree-sitter, etc.) and transforms their ASTs into the uniform CodeElement model <sup>[[1]](#references)</sup>. It auto-detects parser configuration from project files (`tsconfig.json`, `.babelrc`, `.flowconfig`), respecting each project's syntax settings. Integrations that already have a parsed AST (build tools, editors, linters) can provide it directly, avoiding re-parsing.
 
-**Annotation Store** (middle) manages external `.ann.yaml` sidecar files. Each annotation uses a code selector to anchor itself to a specific code element. The store validates annotations against the schema manifest and resolves anchors via the Code Resolver.
+**Annotation Store** (middle) manages external `.ann.yaml` sidecar files. Each annotation uses a code selector to anchor itself to a specific code element. The store validates annotations against the schema manifest (`.config/aql.yaml`) and resolves anchors via the Code Resolver.
 
 **AQL Query API** (top) is the interface agents, CI, and tooling use to query annotations. It combines annotation metadata with resolved code elements.
 
@@ -356,7 +357,7 @@ Multiple annotations can attach to the same code element from separate entries.
 
 ### Schema Manifest
 
-The schema manifest lives at `.annotations/schema.yaml` in the project root. It defines the vocabulary of annotation tags and their attributes.
+The schema manifest lives at `.config/aql.yaml` in the project root <sup>[[1]](#references)</sup>. It defines the vocabulary of annotation tags and their attributes, and serves as the project boundary marker for AQL tooling.
 
 ```yaml
 version: "1.0"
@@ -403,7 +404,7 @@ The manifest enables: tag validation (known tags only), attribute validation (de
 
 ### AQL (Agent Query Language)
 
-Full TypeScript interfaces are provided by the reference implementation.
+The reference implementation exposes these operations. Examples below use TypeScript-like pseudocode for readability.
 
 #### `aql.select(annotationSelector)`
 
@@ -462,6 +463,65 @@ Traversal: `closest(selector)`, `ancestors()`, `selectWithin(selector)`, `next(s
 
 Attribute access: `attr(name)` returns raw value, `resolve(attrName)` substitutes `$N` bindings, `binding(path)` extracts specific bindings.
 
+### MCP Server
+
+AQL is exposed to agents via the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP). One server per project, communicating over stdio.
+
+#### Setup
+
+The server is configured in the MCP client (Claude Desktop, Claude Code, etc.):
+
+```json
+{
+  "mcpServers": {
+    "aql": {
+      "command": "aql-mcp-server",
+      "args": ["--project", "/path/to/project"]
+    }
+  }
+}
+```
+
+Multi-project setups use multiple MCP server instances. The host app already supports this.
+
+#### Tools
+
+| Tool | Purpose | Needs source parsing? |
+|------|---------|----------------------|
+| `aql_schema` | Discover project tags, attributes, audiences, visibilities | No |
+| `aql_select` | Query annotations by tag/attributes (CSS-like selectors) | No |
+| `aql_select_annotated` | Query by code structure, return code + annotations | Yes (single file) |
+| `aql_validate` | Check annotations against schema manifest | No |
+| `aql_repair` | Detect broken selectors, suggest fixes | No (basic), Yes (source-aware) |
+
+`aql_select` is the workhorse tool. It operates purely on the annotation index — no source parsing — making it fast for project-wide queries. The `file` parameter is optional; omit it to search all annotations.
+
+`aql_select_annotated` requires a `file` parameter because it parses source code, which is expensive. No project-wide code parsing.
+
+#### Performance model
+
+At startup, the server:
+1. Reads `--project` argument
+2. Parses `.config/aql.yaml` into an in-memory schema
+3. Globs `**/*.ann.yaml` (respecting `.gitignore`), parses all into an in-memory annotation index
+4. Registers 5 MCP tools
+5. Accepts requests over stdio
+
+Annotation data is stat-checked before access. If the `.ann.yaml` file's mtime changed, it is re-parsed. Source files are parsed on demand (for `aql_select_annotated`) and cached per-file. No file watchers — MCP servers are short-lived subprocesses.
+
+#### Example session
+
+```
+Agent → aql_schema {}
+  ← { tags: { controller: {...}, react-hook: {...} }, annotationFiles: 12 }
+
+Agent → aql_select { selector: 'controller[method="POST"]' }
+  ← { results: [{ tag: "controller", attrs: { method: "POST", path: "/api/users" }, file: "src/api/users.ts" }] }
+
+Agent → aql_select_annotated { selector: 'function[async]', file: 'src/api/users.ts' }
+  ← { results: [{ codeElement: { tag: "function", name: "createUser" }, annotations: [...] }] }
+```
+
 ## Drawbacks
 
 - **Selector drift**
@@ -478,8 +538,8 @@ Attribute access: `attr(name)` returns raw value, `resolve(attrName)` substitute
   - The category of "non-derivable" metadata shrinks over time
   - Organizational metadata (ownership, performance targets, deprecation intent) will likely never be derivable
 - **Code Resolver complexity**
-  - Supporting every language requires language-specific parsers
-  - [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) covers many languages but mapping each grammar to the universal element model is per-language work
+  - Supporting every language requires a resolver adapter that maps existing parser ASTs to the universal element model
+  - The adapter pattern <sup>[[1]](#references)</sup> reduces scope (no custom parsers), but per-language mapping from parser AST nodes to CodeElements is still per-language work
   - If the Code Resolver is unreliable, selectors silently fail to match and the system becomes untrustworthy
 - **Universal vocabulary limits**
   - Some constructs don't map cleanly (Go's channels, Rust's lifetimes, Python's comprehensions)
@@ -494,7 +554,7 @@ Attribute access: `attr(name)` returns raw value, `resolve(attrName)` substitute
 
 ## Alternatives
 
-Each alternative is documented with full rationale in the [Decision Log](../docs/decisions.md) <sup>[[1]](#references)</sup>
+Each alternative is documented with full rationale in the [Decision Log](./DECISIONS.md) <sup>[[1]](#references)</sup>
 
 - **Inline comment annotations** <sup>[[1]](#references)</sup>
   - Merge conflicts, AI churn, no tag discovery
@@ -559,15 +619,15 @@ Key concepts to introduce in order:
 6. AQL
    - How to query it all
 
-The [walkthrough](../docs/walkthrough.md) <sup>[[2]](#references)</sup> demonstrates the full system applied to Grafana's Go + TypeScript codebase.
+The [walkthrough](./WALKTHROUGH.md) <sup>[[2]](#references)</sup> demonstrates the full system applied to Grafana's Go + TypeScript codebase.
 
 ## Unresolved Questions
 
-- **Code Resolver implementation**
-  - The spec defines what the Code Resolver produces but not how
-  - Tree-sitter is the obvious candidate (grammar coverage across 100+ languages)
-  - Mapping from Tree-sitter AST nodes to universal code elements is per-language work that needs to be specified or prototyped
-  - Without a working Code Resolver, the selector syntax is theoretical
+- **Code Resolver: additional languages**
+  - A Rust resolver using tree-sitter is implemented, extracting functions, structs, enums, traits, impl blocks, modules, consts, statics, type aliases, and macros into CodeElements
+  - The adapter interface (`CodeResolver` trait, `ResolverRegistry`) is defined and working
+  - Remaining open work: resolvers for other languages (Go, TypeScript, Python) need to be implemented using the same adapter pattern
+  - Auto-detection of parser configuration from project files (`tsconfig.json`, `.babelrc`, `.flowconfig`) is not yet implemented
 - **Repair heuristics**
   - `aql.repair()` needs to detect renames, moves, and restructurings
   - What confidence threshold should trigger auto-repair vs manual review?
@@ -597,6 +657,6 @@ The [walkthrough](../docs/walkthrough.md) <sup>[[2]](#references)</sup> demonstr
 
 ## References
 
-1. **^** ["Decision Log"](../docs/decisions.md), design decisions, alternatives considered, and rationale
-2. **^** ["Walkthrough: Grafana"](../docs/walkthrough.md), applied to Grafana's Go + TypeScript codebase
+1. **^** ["Decision Log"](./DECISIONS.md), design decisions, alternatives considered, and rationale
+2. **^** ["Walkthrough: Grafana"](./WALKTHROUGH.md), applied to Grafana's Go + TypeScript codebase
 3. **^** TypeScript Interfaces, `AQL`, `AnnotatedElement`, `CodeElement` type definitions (reference implementation)
