@@ -3358,6 +3358,72 @@ For frameworks where routes/controllers are registered imperatively at runtime (
 | Express | `app.get('/path', handler)` | Low (runtime only) |
 | Django | `urls.py` config | Medium (requires execution) |
 
+#### Prior Art: How Existing Tools Extract Metadata
+
+Different tools use different approaches. AQL extractors learn from all of them:
+
+| Approach | How It Works | Example Tools | Pros | Cons |
+|----------|--------------|---------------|------|------|
+| **Comment Parsing** | Parse JSDoc/docstrings with YAML/annotations | [swagger-jsdoc](https://github.com/Surnet/swagger-jsdoc) | No runtime needed | Prone to typos, out of sync |
+| **Decorator Reflection** | Decorators store metadata via `Reflect.defineMetadata` | [NestJS Swagger](https://docs.nestjs.com/openapi/introduction) | Type-safe, validated | Requires decorators |
+| **Database Introspection** | Read schema directly from database | [Prisma `db pull`](https://www.prisma.io/docs/orm/prisma-schema/introspection) | Always accurate | Needs DB connection |
+| **AST Parsing** | Parse source code without executing | [ts-morph](https://ts-morph.com/) | No runtime, deterministic | Can't handle dynamic code |
+| **Runtime Introspection** | Execute app, inspect internal state | [express-list-endpoints](https://github.com/AlbertoFdzM/express-list-endpoints) | Sees final state | Needs full app startup |
+| **Mock Interception** | Mock framework API, capture calls | **AQL approach** | No deps, captures dynamic | Must mock all APIs |
+
+**swagger-jsdoc** — Scans files for `@swagger` comments containing YAML:
+```javascript
+/**
+ * @swagger
+ * /users:
+ *   get:
+ *     summary: List users
+ */
+app.get('/users', handler);
+```
+The annotation is separate from the code, can drift.
+
+**NestJS Swagger** — Decorators use `reflect-metadata` to store API info:
+```typescript
+@Get()
+@ApiOperation({ summary: 'List users' })
+findAll() { }
+```
+The `SwaggerModule` reads metadata via `Reflect.getMetadata()`. Tight coupling, always in sync.
+
+**Prisma** — Introspects database directly:
+```bash
+prisma db pull  # Reads DB schema → generates Prisma schema
+prisma generate # Prisma schema → TypeScript client
+```
+Source of truth is the database itself.
+
+**ts-morph** — Parses TypeScript AST statically:
+```typescript
+const project = new Project();
+const sourceFile = project.addSourceFileAtPath("src/app.ts");
+sourceFile.getFunctions().forEach(fn => {
+  console.log(fn.getName(), fn.getParameters());
+});
+```
+Works without running code, but can't see dynamic registrations.
+
+**express-list-endpoints** — Introspects Express internal `_router.stack`:
+```javascript
+const endpoints = listEndpoints(app);
+// Reads app._router.stack[].route.path, .methods, etc.
+```
+Requires running app, depends on Express internals (breaks in Express 5).
+
+**AQL Mock Approach** — Best of both worlds:
+```javascript
+require('@aql/preset-express/register');  // Mock, not introspect
+require('./src/app');                      // Runs, but with mock
+```
+- Like **runtime introspection**: captures dynamic registrations
+- Like **AST parsing**: no database, no services needed
+- Unlike **express-list-endpoints**: doesn't depend on `_router.stack` internals
+
 #### Configuration
 
 Extractors are declared in the schema manifest:
