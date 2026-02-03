@@ -3491,292 +3491,185 @@ print(json.dumps({'annotations': annotations}))
 
 #### Mock-Based Extraction
 
-The examples above require running the actual application with all its dependencies. A simpler approach: **mock the framework API** to capture registrations without executing real code.
-
-**Key insight**: Frameworks register routes/handlers via a known public API. Mock that API to capture the registrations.
-
-| Framework | API to Mock | Captures |
-|-----------|-------------|----------|
-| Express | `app.get()`, `app.post()`, etc. | Routes |
-| React Router | `<Route path="...">` | Routes |
-| Flask | `@app.route()` | Routes |
-| GraphQL | `Query`, `Mutation` builders | Resolvers |
-| gRPC | Service definitions | RPC methods |
-| tRPC | `router.query()`, `router.mutation()` | Procedures |
-
-**Example: Express Mock Extractor**
-
-Instead of introspecting `app._router.stack`, mock Express itself:
+**The practical solution**: Presets ship mocks, users write a 2-line script.
 
 ```javascript
-// .config/aql/mock-express.js
-const annotations = [];
-const callsites = new Map();
-
-// Track where functions are defined
-function trackCallsite(fn) {
-  const err = new Error();
-  const stack = err.stack.split('\n')[3]; // Caller's caller
-  const match = stack.match(/at .+ \((.+):(\d+):\d+\)/);
-  if (match) {
-    callsites.set(fn, { file: match[1], line: parseInt(match[2]) });
-  }
-  return fn;
-}
-
-// Mock Express app
-const mockApp = {
-  get: (path, ...handlers) => {
-    const handler = handlers[handlers.length - 1];
-    const loc = callsites.get(handler) || { file: 'unknown', line: 0 };
-    annotations.push({
-      file: loc.file,
-      bind: handler.name || 'anonymous',
-      tag: 'endpoint',
-      attrs: { method: 'GET', path, intent: 'read' }
-    });
-  },
-  post: (path, ...handlers) => {
-    const handler = handlers[handlers.length - 1];
-    const loc = callsites.get(handler) || { file: 'unknown', line: 0 };
-    annotations.push({
-      file: loc.file,
-      bind: handler.name || 'anonymous',
-      tag: 'endpoint',
-      attrs: { method: 'POST', path, intent: 'write' }
-    });
-  },
-  put: (path, ...handlers) => { /* similar */ },
-  delete: (path, ...handlers) => { /* similar */ },
-  use: (path, router) => {
-    // Handle mounted routers with prefix
-    if (router._routes) {
-      router._routes.forEach(r => {
-        annotations.push({
-          ...r,
-          attrs: { ...r.attrs, path: path + r.attrs.path }
-        });
-      });
-    }
-  },
-  listen: () => {}, // No-op
-};
-
-// Mock express() factory
-function express() {
-  return mockApp;
-}
-express.Router = () => {
-  const routes = [];
-  return {
-    _routes: routes,
-    get: (path, handler) => routes.push({ /* ... */ }),
-    post: (path, handler) => routes.push({ /* ... */ }),
-  };
-};
-
-// Replace the real express module
-require.cache[require.resolve('express')] = { exports: express };
-
-// Now load the app - it will use our mock
-require('../../src/app');
-
-// Output annotations
-console.log(JSON.stringify({ annotations }));
+// extract.js — this is all the user writes
+require('@aql/preset-express/register');  // Preset's mock
+require('./src/app');                      // User's app
 ```
 
-**Example: React Router Mock Extractor**
+When the user's app calls `app.get('/users', handler)`, the mock captures it. Run with `node extract.js`.
+
+#### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  User's extract.js                                          │
+│                                                             │
+│  require('@aql/preset-express/register')  ──┐              │
+│  require('./src/app')                       │              │
+│                                             ▼              │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  Preset's register.js                               │   │
+│  │  - Mocks require('express')                         │   │
+│  │  - Captures app.get(), app.post(), etc.             │   │
+│  │  - Outputs JSON on process exit                     │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                             │              │
+│                                             ▼              │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  User's src/app.js                                  │   │
+│  │  const express = require('express') ← gets mock     │   │
+│  │  app.get('/users', getUsers)        ← captured      │   │
+│  │  app.post('/users', createUser)     ← captured      │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                    { "annotations": [...] }
+```
+
+#### Preset Structure
+
+```
+@aql/preset-express/
+├── package.json
+├── index.yaml          # Tag definitions
+└── register.js         # The mock
+```
+
+**register.js** (shipped by preset):
 
 ```javascript
-// .config/aql/mock-react-router.js
+// @aql/preset-express/register.js
 const annotations = [];
+const path = require('path');
 
-// Mock React
-global.React = {
-  createElement: (type, props, ...children) => {
-    if (type === Route || type.displayName === 'Route') {
-      annotations.push({
-        file: props.__source?.fileName || 'unknown',
-        bind: props.element?.type?.name || props.component?.name || 'anonymous',
-        tag: 'ui-navigation',
-        attrs: {
-          type: 'route',
-          path: props.path,
-          exact: props.exact || false,
-        }
-      });
-    }
-    // Process children recursively
-    children.flat().forEach(child => {
-      if (child && typeof child === 'object') {
-        // Already processed by createElement
-      }
-    });
-    return { type, props, children };
-  }
-};
+function capture(method, routePath, handlers) {
+  const handler = handlers[handlers.length - 1];
+  // Get file:line from stack trace
+  const stack = new Error().stack.split('\n')[3];
+  const match = stack.match(/\((.+):(\d+):\d+\)/) || stack.match(/at (.+):(\d+):\d+/);
 
-// Mock Route component
-const Route = ({ path, element, component }) => null;
-Route.displayName = 'Route';
+  annotations.push({
+    file: match ? path.relative(process.cwd(), match[1]) : 'unknown',
+    line: match ? parseInt(match[2]) : 0,
+    bind: handler?.name || 'anonymous',
+    tag: 'endpoint',
+    attrs: { method, path: routePath }
+  });
+}
 
-// Mock other react-router exports
-module.exports = {
-  BrowserRouter: ({ children }) => children,
-  Routes: ({ children }) => children,
-  Route,
-  Link: () => null,
-  Navigate: () => null,
-};
+const app = () => ({
+  get: (p, ...h) => capture('GET', p, h),
+  post: (p, ...h) => capture('POST', p, h),
+  put: (p, ...h) => capture('PUT', p, h),
+  delete: (p, ...h) => capture('DELETE', p, h),
+  patch: (p, ...h) => capture('PATCH', p, h),
+  use: () => {},
+  listen: () => {},
+});
+app.Router = app;
+app.json = () => (req, res, next) => next?.();
+app.static = () => (req, res, next) => next?.();
 
-require.cache[require.resolve('react-router-dom')] = { exports: module.exports };
+require.cache[require.resolve('express')] = { exports: app };
 
-// Load the app's router configuration
-require('../../src/App');
-
-console.log(JSON.stringify({ annotations }));
+process.on('exit', () => console.log(JSON.stringify({ annotations }, null, 2)));
 ```
 
-**Example: Flask Mock Extractor**
+#### User Workflow
 
+```bash
+# 1. Install preset
+npm install @aql/preset-express
+
+# 2. Create extract.js
+cat > extract.js << 'EOF'
+require('@aql/preset-express/register');
+require('./src/app');
+EOF
+
+# 3. Run
+node extract.js
+```
+
+**Output:**
+
+```json
+{
+  "annotations": [
+    {
+      "file": "src/routes/users.js",
+      "line": 12,
+      "bind": "getUsers",
+      "tag": "endpoint",
+      "attrs": { "method": "GET", "path": "/api/users" }
+    },
+    {
+      "file": "src/routes/users.js",
+      "line": 24,
+      "bind": "createUser",
+      "tag": "endpoint",
+      "attrs": { "method": "POST", "path": "/api/users" }
+    }
+  ]
+}
+```
+
+#### Other Framework Examples
+
+**Flask:**
 ```python
-# .config/aql/mock-flask.py
-import sys
-import json
-
-annotations = []
-
-class MockFlask:
-    def __init__(self, name):
-        self.name = name
-
-    def route(self, path, methods=['GET']):
-        def decorator(fn):
-            for method in methods:
-                annotations.append({
-                    'file': fn.__code__.co_filename,
-                    'bind': fn.__name__,
-                    'tag': 'endpoint',
-                    'attrs': {
-                        'method': method,
-                        'path': path,
-                        'intent': 'read' if method == 'GET' else 'write'
-                    }
-                })
-            return fn
-        return decorator
-
-    def get(self, path):
-        return self.route(path, methods=['GET'])
-
-    def post(self, path):
-        return self.route(path, methods=['POST'])
-
-    # ... other methods
-
-# Replace Flask in sys.modules before app imports it
-sys.modules['flask'] = type(sys)('flask')
-sys.modules['flask'].Flask = MockFlask
-
-# Now import the app
-from app import app  # This uses our mock
-
-print(json.dumps({'annotations': annotations}))
+# extract.py
+import aql_preset_flask  # pip install aql-preset-flask
+import app
 ```
 
-**Example: GraphQL Schema Mock Extractor**
-
+**React Router:**
 ```javascript
-// .config/aql/mock-graphql.js
-const annotations = [];
-
-// Mock GraphQL schema builders
-const mockGraphQL = {
-  GraphQLObjectType: class {
-    constructor({ name, fields }) {
-      const fieldDefs = typeof fields === 'function' ? fields() : fields;
-      Object.entries(fieldDefs).forEach(([fieldName, config]) => {
-        annotations.push({
-          file: config.resolve?.__source || 'unknown',
-          bind: config.resolve?.name || fieldName,
-          tag: 'endpoint',
-          attrs: {
-            protocol: 'graphql',
-            operation: name === 'Query' ? 'query' : name === 'Mutation' ? 'mutation' : 'type',
-            field: fieldName,
-            intent: name === 'Mutation' ? 'write' : 'read',
-          }
-        });
-      });
-    }
-  },
-  GraphQLSchema: class {
-    constructor({ query, mutation, subscription }) {
-      // Types already registered via GraphQLObjectType
-    }
-  },
-  GraphQLString: {},
-  GraphQLInt: {},
-  GraphQLID: {},
-  GraphQLList: (type) => ({}),
-  GraphQLNonNull: (type) => ({}),
-};
-
-require.cache[require.resolve('graphql')] = { exports: mockGraphQL };
-
-// Load schema
-require('../../src/schema');
-
-console.log(JSON.stringify({ annotations }));
+require('@aql/preset-react-router/register');
+require('./src/routes');
 ```
 
-#### Preset-Provided Mocks
-
-Presets can include ready-to-use mock extractors:
-
-```yaml
-# @aql/preset-express/index.yaml
-name: "@aql/preset-express"
-version: "1.0.0"
-
-tags:
-  endpoint:
-    description: HTTP endpoint
-    attrs:
-      method: { type: enum, values: [GET, POST, PUT, PATCH, DELETE] }
-      path: { type: string }
-      intent: { type: enum, values: [read, write] }
-
-extractors:
-  - name: express-mock
-    run: node node_modules/@aql/preset-express/extract.js
-    # The preset ships with the mock extractor
+**tRPC:**
+```javascript
+require('@aql/preset-trpc/register');
+require('./src/router');
 ```
 
-Users just add the preset—no extractor code to write:
+**GraphQL:**
+```javascript
+require('@aql/preset-graphql/register');
+require('./src/schema');
+```
+
+#### Or Use the Manifest
 
 ```yaml
 # .config/aql.yaml
 extends:
-  - "@aql/preset-express"  # Includes mock extractor
+  - "@aql/preset-express"
 
-# That's it! Run: aql extract
+extractors:
+  - name: routes
+    entry: ./src/app.js   # Preset knows how to extract from this
 ```
 
-#### Mock Extractor Benefits
+Then just run:
+```bash
+aql extract
+```
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| **Runtime introspection** | Sees final state | Requires full app startup, dependencies |
-| **AST parsing** | No execution needed | Can't handle dynamic registration |
-| **Mock-based** | Simple, no deps, captures dynamic code | Must mock all used APIs |
+#### Why This Works
 
-Mock-based extraction is the **recommended default** for most frameworks because:
-1. No need to start databases, services, etc.
-2. No internal API knowledge needed (`_router.stack`)
-3. Works with dynamic route registration
-4. Presets can ship ready-to-use mocks
-5. Fast—only loads route definitions, not the whole app
+| Fact | Implication |
+|------|-------------|
+| User's code already calls `app.get()` | We just intercept those calls |
+| Mocks don't need real dependencies | No database, no services, no config |
+| Stack traces give us file:line | We know where each route is defined |
+| Presets ship the mock | Users write 2 lines, not 200 |
 
 ### AQL (Agent Query Language)
 
