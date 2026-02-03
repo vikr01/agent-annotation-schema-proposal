@@ -148,12 +148,12 @@ aql.repair()
 
 | Component | Description | Status |
 |-----------|-------------|--------|
-| Proposal | This document | Drafting |
-| Specification | [RFC](./SPEC.md) | Drafting |
-| Core query language | Selector parsing, annotation matching, code element model | Implemented (`aql-engine`) |
+| Specification | [RFC](./SPEC.md) | Published |
+| Core query language | Selector parsing, annotation matching, code element model | Implemented ([aql-engine](https://github.com/vikr01/aql)) |
 | Resolvers | Plugin-based parsing into universal elements (code, natural language, others) | Implemented (Rust via tree-sitter) |
-| Annotation store | `.ann.yaml` sidecar reading, schema manifest validation | Implemented (`aql-engine`) |
-| MCP server | Exposes query language as 5 MCP tools | Implemented (`aql-mcp-server`) |
+| Annotation store | `.aql` sidecar reading, schema manifest validation | Implemented ([aql-engine](https://github.com/vikr01/aql)) |
+| MCP server | Exposes query language as 5 MCP tools | Implemented ([aql-mcp-server](https://github.com/vikr01/aql)) |
+| Web REPL | Browser-based playground for queries | Implemented ([aql-repl](https://github.com/vikr01/aql)) |
 | Mutations | Transactional read/write for annotation files | Planned |
 
 ---
