@@ -28,49 +28,28 @@
 
 ## Summary
 
-A structured, language-agnostic system for attaching queryable metadata to code. Annotations are stored in external sidecar files (`.ann.yaml`), anchored to code via CSS-like selectors, and queried through a unified API. A schema manifest enables tag discovery without scanning source files.
+A structured, language-agnostic system for attaching queryable metadata to code. Annotations are stored in external XML sidecar files (`.aql`), anchored to code via binding keys and CSS-like selectors, and queried through a unified API. A schema manifest enables tag discovery without scanning source files.
 
 ## Basic Example
 
 Three backend handlers in three languages. The source code shows they take HTTP requests, but not who owns them, what the auth model is, or where they sit in the API surface:
 
-**Go**: `UserController.go.ann.yaml`
-```yaml
-annotations:
-  - select: 'function[name="HandleCreateUser"]'
-    tag: controller
-    attrs:
-      method: POST
-      path: /api/users
-      owner: "@backend"
-      auth: required
-      visibility: public
+**Go**: `UserController.aql`
+```xml
+<controller bind="HandleCreateUser" method="POST" path="/api/users"
+            owner="@backend" auth="required" visibility="public" />
 ```
 
-**TypeScript**: `userController.ts.ann.yaml`
-```yaml
-annotations:
-  - select: 'function[name="createUser"]'
-    tag: controller
-    attrs:
-      method: POST
-      path: /api/users
-      owner: "@backend"
-      auth: required
-      visibility: public
+**TypeScript**: `userController.aql`
+```xml
+<controller bind="createUser" method="POST" path="/api/users"
+            owner="@backend" auth="required" visibility="public" />
 ```
 
-**Python**: `user_routes.py.ann.yaml`
-```yaml
-annotations:
-  - select: 'function[name="create_user"]'
-    tag: controller
-    attrs:
-      method: POST
-      path: /users
-      owner: "@backend"
-      auth: required
-      visibility: public
+**Python**: `user_routes.aql`
+```xml
+<controller bind="create_user" method="POST" path="/users"
+            owner="@backend" auth="required" visibility="public" />
 ```
 
 One query finds all three:
@@ -122,7 +101,7 @@ Three layers separate code understanding, metadata storage, and querying:
 │  and resolving them against code                 │
 ├─────────────────────────────────────────────────┤
 │              Annotation Store                    │
-│  External .ann.yaml sidecar files mapping        │
+│  External .aql sidecar files mapping        │
 │  code selectors to semantic tags                 │
 ├─────────────────────────────────────────────────┤
 │              Code Resolver                       │
@@ -133,7 +112,7 @@ Three layers separate code understanding, metadata storage, and querying:
 
 **Code Resolver** (bottom) transforms source files from any language into a universal code element tree. Rather than implementing its own parsers, it delegates to existing ones (Babel, TypeScript compiler, Tree-sitter, etc.) and transforms their ASTs into the uniform CodeElement model <sup>[[1]](#references)</sup>. It auto-detects parser configuration from project files (`tsconfig.json`, `.babelrc`, `.flowconfig`), respecting each project's syntax settings. Integrations that already have a parsed AST (build tools, editors, linters) can provide it directly, avoiding re-parsing.
 
-**Annotation Store** (middle) manages external `.ann.yaml` sidecar files. Each annotation uses a code selector to anchor itself to a specific code element. The store validates annotations against the schema manifest (`.config/aql.yaml`) and resolves anchors via the Code Resolver.
+**Annotation Store** (middle) manages external `.aql` sidecar files. Each annotation uses a code selector to anchor itself to a specific code element. The store validates annotations against the schema manifest (`.config/aql.schema`) and resolves anchors via the Code Resolver.
 
 **AQL Query API** (top) is the interface agents, CI, and tooling use to query annotations. It combines annotation metadata with resolved code elements.
 
@@ -326,59 +305,62 @@ These appear in annotation attribute values and are resolved at query time, not 
 
 ### Annotation File Format
 
-Annotations are stored in sidecar files alongside source code. For any source file, its sidecar has the same name with `.ann.yaml` appended:
+Annotations are stored in XML sidecar files alongside source code. For any source file, its sidecar shares the stem name with a `.aql` extension:
 
 ```
-src/components/TodoList.tsx              ← source
-src/components/TodoList.tsx.ann.yaml     ← sidecar
+src/components/TodoList.tsx       ← source
+src/components/TodoList.aql       ← sidecar
 ```
 
 #### Structure
 
-```yaml
-annotations:
-  - select: <code-selector>
-    tag: <annotation-tag>
-    attrs:
-      <key>: <value>
-    children:
-      - select: <code-selector>
-        tag: <annotation-tag>
-        attrs:
-          <key>: <value>
+```xml
+<tag-name bind="code-element-name" attr="value" ...>
+  <child-tag bind="nested-element" attr="value" />
+</tag-name>
+<another-tag bind="element" attr="value" />
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `select` | string | yes | Code selector anchoring this annotation |
-| `tag` | string | yes | Semantic type, defined in schema manifest |
-| `attrs` | map | no | Key-value attributes |
-| `children` | list | no | Nested annotations scoped to parent's code element |
+| element name | XML tag | yes | Semantic type, defined in schema manifest |
+| `bind` | attribute | yes | Code element name this annotation targets |
+| other attributes | attribute | no | Key-value metadata |
+| children | nested elements | no | Nested annotations scoped to parent's code element |
 
-Children nest annotations within a scope: a component contains hooks, a hook contains fields. The child's selector is resolved within the parent's selected code element.
+Children nest annotations within a scope: a component contains hooks, a hook contains fields. The child's `bind` resolves within the parent's code element.
 
-Attribute values can be strings, booleans, numbers, or expressions (strings containing `$N` positional bindings resolved at query time).
+Attribute values are auto-coerced: `"true"`/`"false"` → boolean, numeric strings → numbers, everything else → string. Expressions (strings containing `$N` positional bindings) are resolved at query time.
 
 Multiple annotations can attach to the same code element from separate entries.
 
+#### Why XML
+
+Annotations are trees of tagged elements with attributes — this is exactly what XML models natively. YAML requires indentation-based nesting and key-value maps to approximate the same structure, with more parsing overhead. XML enables:
+
+- **Zero-copy streaming parsing**: read events without allocating the full document tree
+- **Natural tree structure**: parent-child relationships are syntactic, not indentation-dependent
+- **Attribute-native**: metadata as attributes, not nested maps
+- **Faster parsing**: order-of-magnitude faster than YAML parsers for the same data
+
 ### Schema Manifest
 
-The schema manifest lives at `.config/aql.yaml` in the project root <sup>[[1]](#references)</sup>. It defines the vocabulary of annotation tags and their attributes, and serves as the project boundary marker for AQL tooling.
+The schema manifest lives at `.config/aql.schema` in the project root <sup>[[1]](#references)</sup>. It defines the vocabulary of annotation tags and their attributes, and serves as the project boundary marker for AQL tooling.
 
-```yaml
-version: "1.0"
+```xml
+<schema version="1.0">
+  <define tag="tag-name" description="...">
+    <attr name="attr-name" type="type" required="true" />
+  </define>
 
-tags:
-  <tag-name>:
-    description: <string>
-    attrs:
-      <attr-name>: { type: <type>, required: <bool>, ... }
+  <audiences>
+    <audience name="name" description="..." />
+  </audiences>
 
-audiences:
-  <name>: <description>
-
-visibilities:
-  <name>: <description>
+  <visibilities>
+    <visibility name="name" description="..." />
+  </visibilities>
+</schema>
 ```
 
 #### Attribute Types
@@ -424,7 +406,7 @@ Rather than defining all tags in a single schema manifest, AQL supports communit
                               ▼ extends
 ┌─────────────────────────────────────────────────────────────┐
 │                   Project Schema Manifest                    │
-│  .config/aql.yaml                                           │
+│  .config/aql.schema                                           │
 │  - imports presets                                          │
 │  - adds project-specific tags                               │
 │  - configures extractors                                    │
@@ -3429,21 +3411,18 @@ require('./src/app');                      // Runs, but with mock
 
 Extractors are declared in the schema manifest:
 
-```yaml
-version: "1.0"
+```xml
+<schema version="1.0">
+  <extractors>
+    <extractor name="express-routes" run="node .config/aql/extract-express.js" globs="src/**/*.ts" />
+    <extractor name="django-urls" run="python .config/aql/extract-django.py" globs="**/urls.py" />
+  </extractors>
 
-extractors:
-  - name: express-routes
-    run: node .config/aql/extract-express.js
-  - name: django-urls
-    run: python .config/aql/extract-django.py
-
-tags:
-  controller:
-    description: HTTP route handler
-    attrs:
-      method: { type: enum, values: [GET, POST, PUT, DELETE, PATCH] }
-      path: { type: string }
+  <define tag="controller" description="HTTP route handler">
+    <attr name="method" type="enum" values="GET,POST,PUT,DELETE,PATCH" />
+    <attr name="path" type="string" />
+  </define>
+</schema>
 ```
 
 #### Output Format
@@ -3714,14 +3693,14 @@ require('./src/schema');
 
 #### Or Use the Manifest
 
-```yaml
-# .config/aql.yaml
-extends:
-  - "@aql/preset-express"
-
-extractors:
-  - name: routes
-    entry: ./src/app.js   # Preset knows how to extract from this
+```xml
+<!-- .config/aql.schema -->
+<schema version="1.0">
+  <extends preset="@aql/preset-express" />
+  <extractors>
+    <extractor name="routes" run="node -e 'require(\"@aql/preset-express/extract\")(\"./src/app.js\")'" />
+  </extractors>
+</schema>
 ```
 
 Then just run:
@@ -3895,7 +3874,7 @@ Validate annotation files against the schema manifest:
 
 ```typescript
 aql.validate()
-// → [{ level: "error", file: "Foo.ann.yaml", message: "Unknown tag 'controllr'" }]
+// → [{ level: "error", file: "Foo.aql", message: "Unknown tag 'controllr'" }]
 ```
 
 #### `aql.repair()`
@@ -3904,7 +3883,7 @@ Detect and fix broken selectors caused by code changes (renames, moves, refactor
 
 ```typescript
 aql.repair()
-// → [{ file: "Foo.ann.yaml", selector: 'function[name="oldName"]',
+// → [{ file: "Foo.aql", selector: 'function[name="oldName"]',
 //      suggestion: 'function[name="newName"]', confidence: 0.95 }]
 ```
 
@@ -3966,12 +3945,12 @@ Multi-project setups use multiple MCP server instances. The host app already sup
 
 At startup, the server:
 1. Reads `--project` argument
-2. Parses `.config/aql.yaml` into an in-memory schema
-3. Globs `**/*.ann.yaml` (respecting `.gitignore`), parses all into an in-memory annotation index
+2. Parses `.config/aql.schema` into an in-memory schema
+3. Globs `**/*.aql` (respecting `.gitignore`), parses all into an in-memory annotation index
 4. Registers 5 MCP tools
 5. Accepts requests over stdio
 
-Annotation data is stat-checked before access. If the `.ann.yaml` file's mtime changed, it is re-parsed. Source files are parsed on demand (for `aql_select_annotated`) and cached per-file. No file watchers — MCP servers are short-lived subprocesses.
+Annotation data is stat-checked before access. If the `.aql` file's mtime changed, it is re-parsed. Source files are parsed on demand (for `aql_select_annotated`) and cached per-file. No file watchers — MCP servers are short-lived subprocesses.
 
 #### Example session
 
@@ -4024,8 +4003,8 @@ Each alternative is documented with full rationale in the [Decision Log](./DECIS
   - Merge conflicts, AI churn, no tag discovery
 - **Centralized annotation directory** <sup>[[1]](#references)</sup>
   - Duplicates source tree, distance from code
-- **YAML vs JSON vs TOML** <sup>[[1]](#references)</sup>
-  - JSON verbose, TOML poor nesting
+- **XML vs YAML vs JSON vs TOML** <sup>[[1]](#references)</sup>
+  - YAML slower parsing, JSON verbose, TOML poor nesting
 - **SQL / XPath / GraphQL queries** <sup>[[1]](#references)</sup>
   - Right philosophy, wrong data model for trees
 - **Line-number anchoring** <sup>[[1]](#references)</sup>
@@ -4068,7 +4047,7 @@ The core mental model has two parts:
 2. **The [scope principle](#scope-principle)**
    - The most important thing to teach, because without it, teams annotate everything and then maintain nothing
 
-The annotation file format is YAML, no new syntax to learn. The schema manifest is similar to a JSON Schema or OpenAPI spec: define your vocabulary, validate against it.
+The annotation file format is XML — familiar to anyone who's seen HTML. The schema manifest is similar to a JSON Schema or OpenAPI spec: define your vocabulary, validate against it.
 
 Key concepts to introduce in order:
 1. The [scope principle](#scope-principle)

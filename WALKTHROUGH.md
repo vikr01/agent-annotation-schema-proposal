@@ -46,7 +46,7 @@ grafana/
             SaveDashboardDrawer.tsx   ← Save UI component
             useDashboardSave.tsx      ← Save hook (API call)
   .config/
-    aql.yaml                         ← Schema manifest
+    aql.schema                       ← Schema manifest
 ```
 
 ---
@@ -55,103 +55,60 @@ grafana/
 
 The manifest defines only tags carrying non-derivable metadata: ownership, flows, contracts, and architectural context
 
-```yaml
-# .config/aql.yaml
-version: "1.0"
+```xml
+<!-- .config/aql.schema -->
+<schema version="1.0">
+  <define tag="controller" description="HTTP handler — documents routing, auth, and ownership">
+    <attr name="method" type="enum" values="GET,POST,PUT,DELETE,PATCH" required="true" />
+    <attr name="path" type="string" required="true" />
+    <attr name="auth" type="enum" values="required,optional,none" default="required" />
+    <attr name="deprecated" type="boolean" />
+    <attr name="deprecation-target" type="string" description="Version or date when this endpoint will be removed" />
+  </define>
 
-tags:
-  controller:
-    description: "HTTP handler — documents routing, auth, and ownership"
-    attrs:
-      method:
-        type: enum
-        values: [GET, POST, PUT, DELETE, PATCH]
-        required: true
-      path:
-        type: string
-        required: true
-      auth:
-        type: enum
-        values: [required, optional, none]
-        default: required
-      deprecated:
-        type: boolean
-      deprecation-target:
-        type: string
-        description: "Version or date when this endpoint will be removed"
+  <define tag="api-client" description="Frontend code that calls a backend endpoint">
+    <attr name="endpoint" type="string" required="true" description="Backend path this client calls" />
+    <attr name="method" type="enum" values="GET,POST,PUT,DELETE,PATCH" required="true" />
+  </define>
 
-  api-client:
-    description: "Frontend code that calls a backend endpoint"
-    attrs:
-      endpoint:
-        type: string
-        required: true
-        description: "Backend path this client calls"
-      method:
-        type: enum
-        values: [GET, POST, PUT, DELETE, PATCH]
-        required: true
+  <define tag="component" description="UI component with ownership metadata">
+    <attr name="id" type="string" required="true" />
+  </define>
 
-  component:
-    description: "UI component with ownership metadata"
-    attrs:
-      id:
-        type: string
-        required: true
+  <define tag="react-hook" description="React hook with non-obvious behavior or cache interactions">
+    <attr name="boundary" type="string" description="Required ancestor boundary" />
+    <attr name="preload" type="expression" description="How to prefetch this hook's data" />
+    <attr name="invalidate-key" type="expression" description="Cache key for invalidation" />
+    <attr name="error-handling" type="enum" values="throws,catches,propagates" />
+  </define>
 
-  react-hook:
-    description: "React hook with non-obvious behavior or cache interactions"
-    attrs:
-      boundary:
-        type: string
-        description: "Required ancestor boundary"
-      preload:
-        type: expression
-        description: "How to prefetch this hook's data"
-      invalidate-key:
-        type: expression
-        description: "Cache key for invalidation"
-      error-handling:
-        type: enum
-        values: [throws, catches, propagates]
+  <define tag="middleware" description="Middleware — documents authorization scope">
+    <attr name="name" type="string" required="true" />
+    <attr name="scope" type="string" description="Authorization scope expression" />
+  </define>
 
-  middleware:
-    description: "Middleware — documents authorization scope"
-    attrs:
-      name:
-        type: string
-        required: true
-      scope:
-        type: string
-        description: "Authorization scope expression"
+  <define tag="perf-critical" description="Performance-sensitive code with SLA">
+    <attr name="sla" type="string" />
+    <attr name="traced" type="boolean" />
+  </define>
 
-  perf-critical:
-    description: "Performance-sensitive code with SLA"
-    attrs:
-      sla:
-        type: string
-      traced:
-        type: boolean
+  <define tag="event" description="Event in async data flow">
+    <attr name="name" type="string" required="true" />
+    <attr name="direction" type="enum" values="publish,subscribe" />
+  </define>
 
-  event:
-    description: "Event in async data flow"
-    attrs:
-      name:
-        type: string
-        required: true
-      direction:
-        type: enum
-        values: [publish, subscribe]
+  <audiences>
+    <audience name="product" description="Product engineers building dashboard features" />
+    <audience name="infra" description="Platform team maintaining API infrastructure" />
+    <audience name="security" description="Security team reviewing access control" />
+  </audiences>
 
-audiences:
-  product: "Product engineers building dashboard features"
-  infra: "Platform team maintaining API infrastructure"
-  security: "Security team reviewing access control"
-
-visibilities:
-  public: "Stable API, safe for plugins and external integrations"
-  internal: "Implementation detail, may change between releases"
-  deprecated: "Scheduled for removal in a future version"
+  <visibilities>
+    <visibility name="public" description="Stable API, safe for plugins and external integrations" />
+    <visibility name="internal" description="Implementation detail, may change between releases" />
+    <visibility name="deprecated" description="Scheduled for removal in a future version" />
+  </visibilities>
+</schema>
 ```
 
 ---
@@ -202,46 +159,22 @@ An agent reading this source sees Go methods that take `ReqContext` and return `
 
 The sidecar annotation file captures all of this:
 
-```yaml
-# pkg/api/dashboard.go.ann.yaml
-annotations:
-  - select: 'method[name="GetDashboard"]'
-    tag: controller
-    attrs:
-      method: GET
-      path: /api/dashboards/uid/{uid}
-      auth: required
-      owner: "@grafana/dashboards-squad"
-      audience: product
-      visibility: public
-      note: "Primary dashboard retrieval endpoint — used by plugins and external integrations"
-    children:
-      - select: 'call[name="getDashboardHelper"]'
-        tag: perf-critical
-        attrs:
-          sla: "200ms p99"
-          traced: true
-          note: "Core lookup — hits dashboard store and checks permissions. Must stay under SLA."
+```xml
+<!-- pkg/api/dashboard.aql -->
+<controller bind="GetDashboard" method="GET" path="/api/dashboards/uid/{uid}"
+            auth="required" owner="@grafana/dashboards-squad" audience="product"
+            visibility="public" note="Primary dashboard retrieval endpoint — used by plugins and external integrations">
+  <perf-critical bind="getDashboardHelper" sla="200ms p99" traced="true"
+                 note="Core lookup — hits dashboard store and checks permissions. Must stay under SLA." />
+</controller>
 
-  - select: 'method[name="PostDashboard"]'
-    tag: controller
-    attrs:
-      method: POST
-      path: /api/dashboards/db
-      auth: required
-      owner: "@grafana/dashboards-squad"
-      visibility: public
-      note: "Dashboard save endpoint. Handles both create and update."
+<controller bind="PostDashboard" method="POST" path="/api/dashboards/db"
+            auth="required" owner="@grafana/dashboards-squad" visibility="public"
+            note="Dashboard save endpoint. Handles both create and update." />
 
-  - select: 'method[name="DeleteDashboardByUID"]'
-    tag: controller
-    attrs:
-      method: DELETE
-      path: /api/dashboards/uid/{uid}
-      auth: required
-      owner: "@grafana/dashboards-squad"
-      visibility: public
-      audience: security
+<controller bind="DeleteDashboardByUID" method="DELETE" path="/api/dashboards/uid/{uid}"
+            auth="required" owner="@grafana/dashboards-squad" visibility="public"
+            audience="security" />
 ```
 
 ### Route Registration: Authorization Scopes
@@ -261,31 +194,16 @@ apiRoute.Post("/dashboards/db", authorize(ac.EvalPermission(dashboards.ActionDas
 	routing.Wrap(hs.PostDashboard))
 ```
 
-```yaml
-# pkg/api/api.go.ann.yaml
-annotations:
-  - select: 'call[name="Get"][params=(_, _, _)]'
-    tag: middleware
-    attrs:
-      name: authorization
-      scope: "dashboards:read"
-      audience: security
-      note: "RBAC check via ac.EvalPermission with dashboard UID scope"
+```xml
+<!-- pkg/api/api.aql -->
+<middleware bind="Get" name="authorization" scope="dashboards:read"
+           audience="security" note="RBAC check via ac.EvalPermission with dashboard UID scope" />
 
-  - select: 'call[name="Delete"][params=(_, _, _)]'
-    tag: middleware
-    attrs:
-      name: authorization
-      scope: "dashboards:delete"
-      audience: security
+<middleware bind="Delete" name="authorization" scope="dashboards:delete"
+           audience="security" />
 
-  - select: 'call[name="Post"][params=(_, _, _)]'
-    tag: middleware
-    attrs:
-      name: authorization
-      scope: "dashboards:write"
-      audience: security
-      note: "Write scope covers both create and update operations"
+<middleware bind="Post" name="authorization" scope="dashboards:write"
+           audience="security" note="Write scope covers both create and update operations" />
 ```
 
 ---
@@ -313,20 +231,11 @@ export function getDashboardAPI(version?: 'v1' | 'v2') {
 }
 ```
 
-```yaml
-# public/app/features/dashboard/api/dashboard_api.ts.ann.yaml
-annotations:
-  - select: 'function[name="getDashboardAPI"]'
-    tag: api-client
-    attrs:
-      endpoint: /api/dashboards
-      method: GET
-      owner: "@grafana/dashboards-squad"
-      visibility: internal
-      note: >
-        Factory returning versioned API clients. The "unified" client
-        auto-selects between legacy and k8s backends based on feature flags.
-        Changing client selection logic requires coordination with backend team.
+```xml
+<!-- public/app/features/dashboard/api/dashboard_api.aql -->
+<api-client bind="getDashboardAPI" endpoint="/api/dashboards" method="GET"
+            owner="@grafana/dashboards-squad" visibility="internal"
+            note="Factory returning versioned API clients. The unified client auto-selects between legacy and k8s backends based on feature flags. Changing client selection logic requires coordination with backend team." />
 ```
 
 ### Save Dashboard Hook
@@ -358,31 +267,16 @@ export const useDashboardSave = (dashboard: DashboardModel, isCopy: boolean) => 
 };
 ```
 
-```yaml
-# public/app/features/dashboard/components/SaveDashboard/useDashboardSave.tsx.ann.yaml
-annotations:
-  - select: 'variable[name="useDashboardSave"]'
-    tag: react-hook
-    attrs:
-      error-handling: catches
-      owner: "@grafana/dashboards-squad"
-      visibility: internal
-      note: "Orchestrates dashboard save: API call, version bump, event publish, analytics"
-    children:
-      - select: 'call[name="useSaveDashboardMutation"]'
-        tag: api-client
-        attrs:
-          endpoint: /api/dashboards/db
-          method: POST
-          note: "RTK Query mutation calling PostDashboard Go handler"
-
-      - select: 'call[name="publish"]'
-        tag: event
-        attrs:
-          name: DashboardSavedEvent
-          direction: publish
-          audience: product
-          note: "Notifies other components that a save completed — subscribers refresh their data"
+```xml
+<!-- public/app/features/dashboard/components/SaveDashboard/useDashboardSave.aql -->
+<react-hook bind="useDashboardSave" error-handling="catches"
+            owner="@grafana/dashboards-squad" visibility="internal"
+            note="Orchestrates dashboard save: API call, version bump, event publish, analytics">
+  <api-client bind="useSaveDashboardMutation" endpoint="/api/dashboards/db" method="POST"
+              note="RTK Query mutation calling PostDashboard Go handler" />
+  <event bind="publish" name="DashboardSavedEvent" direction="publish"
+         audience="product" note="Notifies other components that a save completed — subscribers refresh their data" />
+</react-hook>
 ```
 
 ### Save Dashboard UI Component
@@ -406,19 +300,11 @@ export const SaveDashboardDrawer = ({
 };
 ```
 
-```yaml
-# public/app/features/dashboard/components/SaveDashboard/SaveDashboardDrawer.tsx.ann.yaml
-annotations:
-  - select: 'variable[name="SaveDashboardDrawer"]'
-    tag: component
-    attrs:
-      id: SaveDashboardDrawer
-      owner: "@grafana/dashboards-squad"
-      visibility: internal
-      note: >
-        Drawer UI for saving dashboards. Provisioned dashboards show
-        a read-only form (infra concern). New dashboards show save-as.
-        Contact dashboards-squad before changing form logic.
+```xml
+<!-- public/app/features/dashboard/components/SaveDashboard/SaveDashboardDrawer.aql -->
+<component bind="SaveDashboardDrawer" id="SaveDashboardDrawer"
+           owner="@grafana/dashboards-squad" visibility="internal"
+           note="Drawer UI for saving dashboards. Provisioned dashboards show a read-only form (infra concern). New dashboards show save-as. Contact dashboards-squad before changing form logic." />
 ```
 
 ---
@@ -513,7 +399,7 @@ const security = aql.select('[audience="security"]');
    - Agent follows a user action from React through an HTTP boundary into Go using endpoint path matching
    - No source reading required
 4. **Tag discovery via manifest**
-   - Agent read `.config/aql.yaml` once and knew every queryable tag before touching any source file
+   - Agent read `.config/aql.schema` once and knew every queryable tag before touching any source file
 5. **External annotations, clean source**
    - Every `.go` and `.tsx` file is annotation-free
    - Metadata lives in sidecar files

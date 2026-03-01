@@ -14,14 +14,14 @@ Each entry documents context, options considered, decision, and rationale
 - [13. Implementation Language: Rust vs TypeScript](#13-implementation-language-rust-vs-typescript)
 - [12. MCP Server: One Per Project, Annotation-Only Queries Skip Parsing](#12-mcp-server-one-per-project-annotation-only-queries-skip-parsing)
 - [11. Code Resolver: Adapter Pattern with Parser Auto-Detection](#11-code-resolver-adapter-pattern-with-parser-auto-detection)
-- [10. Project Configuration: `.config/aql.yaml` vs `.annotations/schema.yaml`](#10-project-configuration-configaqlyaml-vs-annotationsschemayaml)
+- [10. Project Configuration: `.config/aql.schema` vs `.annotations/schema.yaml`](#10-project-configuration-configaqlyaml-vs-annotationsschemayaml)
 - [9. Selector Drift: Validation + Repair vs Validation Only](#9-selector-drift-validation--repair-vs-validation-only)
 - [8. Annotation Scope: Non-Derivable Metadata Only](#8-annotation-scope-non-derivable-metadata-only)
 - [7. Tag Discovery: Schema Manifest vs Convention vs Scanning](#7-tag-discovery-schema-manifest-vs-convention-vs-scanning)
 - [6. Language-Specific Constructs: Universal Tags + lang-hint vs Per-Language Tags](#6-language-specific-constructs-universal-tags--lang-hint-vs-per-language-tags)
 - [5. Anchoring: Selectors vs Line Numbers vs Symbol Names](#5-anchoring-selectors-vs-line-numbers-vs-symbol-names)
 - [4. Query Language: CSS Selectors vs SQL vs XPath vs GraphQL](#4-query-language-css-selectors-vs-sql-vs-xpath-vs-graphql)
-- [3. YAML vs JSON vs Custom Format](#3-yaml-vs-json-vs-custom-format)
+- [3. XML vs YAML vs JSON vs Custom Format](#3-xml-vs-yaml-vs-json-vs-custom-format)
 - [2. Sidecar Files vs Centralized Store](#2-sidecar-files-vs-centralized-store)
 - [1. Inline Comments vs External Annotation Files](#1-inline-comments-vs-external-annotation-files)
 - [References](#references)
@@ -105,7 +105,7 @@ Each entry documents context, options considered, decision, and rationale
 - Startup time
   - MCP servers are short-lived subprocesses spawned per-session
   - A Rust binary starts in single-digit milliseconds; a Node.js process with `npx` resolution takes hundreds of milliseconds to seconds
-  - For `aql_select` (the most common operation), the entire round-trip — startup, YAML index load, selector parse, query, response — should be imperceptible
+  - For `aql_select` (the most common operation), the entire round-trip — startup, annotation index load, selector parse, query, response — should be imperceptible
 - tree-sitter for Code Resolvers
   - tree-sitter grammars exist for every major language, are written in C, and have first-class Rust bindings
   - A single resolver framework covers Rust, Go, TypeScript, Python, Java, etc. without pulling in each language's native toolchain
@@ -159,7 +159,7 @@ MCP stdio transport
   ▼
 aql-mcp-server --project /path/to/project
   │
-  ├── Startup: parse .config/aql.yaml, index all .ann.yaml → memory
+  ├── Startup: parse .config/aql.schema, index all .aql → memory
   │
   ├── aql_schema          → return manifest (no parsing)
   ├── aql_select           → query annotation index (no parsing)
@@ -177,8 +177,8 @@ aql-mcp-server --project /path/to/project
   - Keeps the server stateless within a project (one manifest, one annotation index)
 - Annotation queries skip source parsing
   - `aql_select` is the most common operation: "find all controllers", "find all code owned by @backend"
-  - These queries only need annotation data (`.ann.yaml` files), not source code
-  - Building the full annotation index at startup (pure YAML parsing) makes all `aql_select` calls O(n) over the index, not O(files × parse time)
+  - These queries only need annotation data (`.aql` files), not source code
+  - Building the full annotation index at startup (XML parsing) makes all `aql_select` calls O(n) over the index, not O(files × parse time)
   - Source parsing is expensive and language-specific; keeping it out of the common path means the server works for any language even before a resolver adapter exists
 - Code queries are per-file only
   - `aql_select_annotated` requires parsing source, which is expensive
@@ -218,7 +218,7 @@ aql-mcp-server --project /path/to/project
 Source Code
   │
   ▼
-Detect project root (walk up to .config/aql.yaml)
+Detect project root (walk up to .config/aql.schema)
   │
   ▼
 Discover parser config (tsconfig.json, .babelrc, .flowconfig, etc.)
@@ -243,7 +243,7 @@ Universal CodeElement
   - They transform the resulting AST into AQL's universal CodeElement model
   - AQL does not re-implement parsing
 - Project config auto-detection
-  - Walk up from file to find project root (`.config/aql.yaml`, falling back to `.git`/`package.json`)
+  - Walk up from file to find project root (`.config/aql.schema`, falling back to `.git`/`package.json`)
   - Discover parser configuration from existing project files:
     - `tsconfig.json` → TypeScript parser with project settings
     - `.babelrc` / `babel.config.js` → Babel parser with configured plugins
@@ -273,7 +273,7 @@ Universal CodeElement
 
 ---
 
-## 10. Project Configuration: `.config/aql.yaml` vs `.annotations/schema.yaml`
+## 10. Project Configuration: `.config/aql.schema` vs `.annotations/schema.yaml`
 
 **Context**: The schema manifest needs a canonical location in the project. Originally proposed at `.annotations/schema.yaml` in the project root ([Decision 7](#7-tag-discovery-schema-manifest-vs-convention-vs-scanning)). A growing ecosystem convention places tool configuration in a `.config/` directory to reduce root-level clutter <sup>[[7]](#references)</sup>.
 
@@ -282,19 +282,19 @@ Universal CodeElement
 | Option | Description |
 |--------|-------------|
 | `.annotations/schema.yaml` | Schema lives in the annotation directory alongside data |
-| `.config/aql.yaml` | Follows the `.config/` convention; separates config from annotation data |
+| `.config/aql.schema` | Follows the `.config/` convention; separates config from annotation data |
 | Support both | Auto-discover whichever exists |
 
-**Decision**: `.config/aql.yaml` for project configuration; `.ann.yaml` sidecars for annotation data. Integrations can override config discovery via callbacks.
+**Decision**: `.config/aql.schema` for project configuration; `.aql` sidecars for annotation data. Integrations can override config discovery via callbacks.
 
-**Default behavior**: AQL always looks for `.config/aql.yaml`. Walk up from the file being queried, stop at the first directory containing `.config/aql.yaml`. That directory is the project root.
+**Default behavior**: AQL always looks for `.config/aql.schema`. Walk up from the file being queried, stop at the first directory containing `.config/aql.schema`. That directory is the project root.
 
-**Custom discovery**: Integrations that need a different location (e.g., a build tool embedding AQL config inside its own config, or an editor with workspace-level settings) can provide a callback to override config resolution. The core library does not search multiple locations or guess — it uses `.config/aql.yaml` unless told otherwise programmatically.
+**Custom discovery**: Integrations that need a different location (e.g., a build tool embedding AQL config inside its own config, or an editor with workspace-level settings) can provide a callback to override config resolution. The core library does not search multiple locations or guess — it uses `.config/aql.schema` unless told otherwise programmatically.
 
 **Rationale**:
 
 - Separation of concerns
-  - Project configuration (schema definitions, resolver settings, workspace includes) is fundamentally different from annotation data (`.ann.yaml` sidecars next to source files)
+  - Project configuration (schema definitions, resolver settings, workspace includes) is fundamentally different from annotation data (`.aql` sidecars next to source files)
   - Mixing them in `.annotations/` conflates tooling config with the data it governs
 - `.config/` is the emerging standard
   - Tools using cosmiconfig/lilconfig already support `.config/` (e.g., Stylelint)
@@ -303,18 +303,18 @@ Universal CodeElement
 - Reduces root clutter
   - One `.config/` directory shared across tools, rather than each tool adding its own dotfile or dotdir to the project root
 - One canonical location, extensible via code
-  - No ambiguity about which file takes precedence — it's always `.config/aql.yaml`
+  - No ambiguity about which file takes precedence — it's always `.config/aql.schema`
   - Integrations that genuinely need a different location hook in via callback, keeping the default simple and predictable
   - This avoids cosmiconfig-style multi-location search where users must reason about which of several files is actually being read
 - Natural home for future configuration
   - Resolver settings, workspace includes for monorepos, CI validation options, and schema inheritance (`extends`) all belong in project config, not in the annotation data directory
 - Project boundary marker
-  - `.config/aql.yaml` serves as the project root marker for walk-up discovery (same algorithm as `tsconfig.json`, `Cargo.toml`, `go.mod`)
-  - When an agent queries a file, AQL walks up parent directories until it finds `.config/aql.yaml`
+  - `.config/aql.schema` serves as the project root marker for walk-up discovery (same algorithm as `tsconfig.json`, `Cargo.toml`, `go.mod`)
+  - When an agent queries a file, AQL walks up parent directories until it finds `.config/aql.schema`
 
 **What we ruled out**: `.annotations/schema.yaml` mixes configuration with data; cosmiconfig-style multi-location search introduces ambiguity about which file is authoritative
 
-**Impact on previous decisions**: This supersedes the location specified in [Decision 7](#7-tag-discovery-schema-manifest-vs-convention-vs-scanning); the schema manifest concept remains unchanged, only its file path changes from `.annotations/schema.yaml` to `.config/aql.yaml`
+**Impact on previous decisions**: This supersedes the location specified in [Decision 7](#7-tag-discovery-schema-manifest-vs-convention-vs-scanning); the schema manifest concept remains unchanged, only its file path changes from `.annotations/schema.yaml` to `.config/aql.schema`
 
 ---
 
@@ -384,7 +384,7 @@ See the RFC's [Scope Principle](./SPEC.md#scope-principle) for the canonical def
 
 ## 7. Tag Discovery: Schema Manifest vs Convention vs Scanning
 
-> **Note**: The manifest location has been updated from `.annotations/schema.yaml` to `.config/aql.yaml`; see [Decision 10](#10-project-configuration-configaqlyaml-vs-annotationsschemayaml)
+> **Note**: The manifest location has been updated from `.annotations/schema.yaml` to `.config/aql.schema`; see [Decision 10](#10-project-configuration-configaqlyaml-vs-annotationsschemayaml)
 
 **Context**: When an agent encounters a project, how does it know what annotation tags are available to query?
 
@@ -394,7 +394,7 @@ See the RFC's [Scope Principle](./SPEC.md#scope-principle) for the canonical def
 |--------|-------------|
 | Schema manifest | `.annotations/schema.yaml` at project root defines all tags |
 | Convention-based | Tags follow naming patterns, agents infer from usage |
-| File scanning | Agent reads all `.ann.yaml` files to discover tags |
+| File scanning | Agent reads all `.aql` files to discover tags |
 | Hardcoded built-ins | Fixed set of tags known to all tools |
 
 **Decision**: Explicit schema manifest at project root
@@ -675,36 +675,42 @@ The declarative principle behind SQL, describe what you want not how to find it,
 
 ---
 
-## 3. YAML vs JSON vs Custom Format
+## 3. XML vs YAML vs JSON vs Custom Format
 
-**Context**: External annotation files need a serialization format
+**Context**: External annotation files need a serialization format. Annotations are trees of tagged elements with attributes — the format must handle nesting naturally and parse efficiently at scale.
 
 **Options considered**:
 
 | Option | Description |
 |--------|-------------|
-| YAML | Human-readable, supports comments, multiline strings |
+| XML | Tree-native, streaming-parseable, attribute-native |
+| YAML | Human-readable, supports comments, indentation-based nesting |
 | JSON | Universal, strict, no ambiguity |
 | TOML | Good for config, less suited for nested data |
 | Custom DSL | Purpose-built syntax |
 
-**Decision**: YAML (`.ann.yaml`)
+**Decision**: XML (`.aql`)
 
 **Rationale**:
-- Readability
-  - Annotations are authored and reviewed by humans
-  - YAML's indentation-based nesting and lack of braces makes annotation files scannable
+- Annotations are trees with attributes — XML's native data model
+  - Tag name = annotation type, XML attributes = metadata, nesting = parent-child scope
+  - `<controller bind="create" method="POST" />` — the annotation *is* the markup
+  - YAML approximates this with indentation and key-value maps, adding a layer of indirection
+- Streaming zero-copy parsing
+  - XML parsers can read events (start tag, attribute, end tag) without allocating the full document tree
+  - For large projects with thousands of sidecar files, this is an order-of-magnitude advantage over YAML (which must parse the entire document before traversal)
+- No ambiguity
+  - XML has no implicit type coercion (YAML's Norway problem: `NO` becomes `false`)
+  - Attribute values are always strings; type coercion is explicit in the engine
 - Comments
-  - YAML supports comments, useful for documenting annotation intent within the file itself
-- Nesting
-  - Annotation hierarchies (children nested under parents) map naturally to YAML's indentation
-- Ecosystem
-  - YAML parsers exist for every language
-  - No custom parser needed for the file format itself
+  - XML supports `<!-- comments -->`, preserving the ability to document intent within sidecar files
+- Familiar syntax
+  - Anyone who reads HTML can read `.aql` files
+  - `<tag attr="value">` is universally understood
 
-**Trade-offs accepted**: YAML has well-known pitfalls (the Norway problem, implicit type coercion); annotation files should use quoted strings for values that could be ambiguous
+**Trade-offs accepted**: XML is more verbose than YAML for deeply nested structures. In practice, annotation files are shallow (1-2 levels of nesting) with most metadata in attributes, so verbosity is minimal. XML also requires closing tags for nested elements, but self-closing tags (`<tag />`) handle the common case of leaf annotations.
 
-**What we ruled out**: JSON is verbose for human authoring (requires quoting every key, no comments); TOML handles flat config well but nested annotation trees poorly; a custom DSL would require a parser and add learning curve for no clear benefit over YAML
+**What we ruled out**: YAML is slower to parse and its indentation sensitivity creates subtle bugs in machine-generated files; JSON is verbose for human authoring (requires quoting every key, no comments); TOML handles flat config well but nested annotation trees poorly; a custom DSL would require a parser and add learning curve
 
 ---
 
@@ -716,18 +722,18 @@ The declarative principle behind SQL, describe what you want not how to find it,
 
 | Option | Description |
 |--------|-------------|
-| Sidecar files | `Foo.tsx.ann.yaml` alongside `Foo.tsx` |
+| Sidecar files | `Foo.tsx.aql` alongside `Foo.tsx` |
 | Centralized directory | `.annotations/src/components/Foo.tsx.yaml` mirroring the source tree |
 | Database/service | Annotations stored in a queryable backend |
 
-**Decision**: Sidecar files (`.ann.yaml` suffix alongside source)
+**Decision**: Sidecar files (`.aql` suffix alongside source)
 
 **Rationale**:
 - Locality
   - Sidecar files appear next to the source file in the file tree
   - Obvious which annotations belong to which code
 - Git diffs
-  - Changes to annotations for `Foo.tsx` show up in `Foo.tsx.ann.yaml`
+  - Changes to annotations for `Foo.tsx` show up in `Foo.tsx.aql`
   - Easy to review in PRs
 - No path duplication
   - A centralized store must mirror the source tree, creating redundant directory structures that break when files move
@@ -747,7 +753,7 @@ The declarative principle behind SQL, describe what you want not how to find it,
 | Option | Description |
 |--------|-------------|
 | Inline comments (v1) | XML tags embedded in `//` or `/* */` comments alongside code |
-| External sidecar files | `.ann.yaml` files alongside source files |
+| External sidecar files | `.aql` files alongside source files |
 | Centralized annotation store | All annotations in a single `.annotations/` directory |
 
 **Decision**: External sidecar files

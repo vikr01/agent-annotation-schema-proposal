@@ -11,8 +11,8 @@ Agents can read code but not metadata: who owns this endpoint, what's the respon
 
 ## Solution
 
-- `.ann.yaml` sidecar file next to each source file
-- [CSS-like selectors](https://developer.mozilla.org/en-US/docs/Web/API/Document_Object_Model/Locating_DOM_elements_using_selectors) point at code elements
+- `.aql` XML sidecar file next to each source file
+- [CSS-like selectors](https://developer.mozilla.org/en-US/docs/Web/API/Document_Object_Model/Locating_DOM_elements_using_selectors) for querying, binding keys for anchoring
 - Agents query via [MCP](https://modelcontextprotocol.io/introduction), no source scanning
 - [Schema manifest](./SPEC.md#schema-manifest) at project root: agent reads once, knows every available tag
 
@@ -20,8 +20,8 @@ Agents can read code but not metadata: who owns this endpoint, what's the respon
 
 | Source | What we borrow |
 |--------|----------------|
-| [CSS Selectors](https://developer.mozilla.org/en-US/docs/Web/API/Document_Object_Model/Locating_DOM_elements_using_selectors) | Query and anchoring syntax: `tag[attr="value"]`, combinators, pseudo-selectors |
-| YAML | Annotation format: readable, diffable, language-agnostic |
+| [CSS Selectors](https://developer.mozilla.org/en-US/docs/Web/API/Document_Object_Model/Locating_DOM_elements_using_selectors) | Query syntax: `tag[attr="value"]`, combinators |
+| XML | Annotation format: streaming-parseable, tree-native, attribute-native |
 | Prolog <sup>[[2]](#references)</sup> | Unification variables (`$N`), pattern matching for expression attributes |
 
 Same selectors across all languages:
@@ -60,21 +60,13 @@ export function TodoList({ userId, filter }: TodoListProps): React.ReactNode {
 
 **Annotation:**
 
-```yaml
-# TodoList.tsx.ann.yaml
-annotations:
-  - select: 'function[name="TodoList"]'
-    tag: component
-    attrs:
-      id: TodoList
-      owner: "@frontend"
-      visibility: public
-    children:
-      - select: 'call[name="useEffect"]'
-        tag: react-hook
-        attrs:
-          error-handling: "silent, no error state"
-          note: "Refetches on userId change"
+```xml
+<!-- TodoList.aql -->
+<component bind="TodoList" id="TodoList" owner="@frontend" visibility="public">
+  <react-hook bind="useEffect"
+              error-handling="silent, no error state"
+              note="Refetches on userId change" />
+</component>
 ```
 
 **Query:**
@@ -130,7 +122,7 @@ node.resolve('preload')          // substitutes $N with actual code args
 
 // catch annotation drift
 aql.validate()
-// → [{ level: "error", file: "Foo.ann.yaml", message: "Unknown tag 'controllr'" }]
+// → [{ level: "error", file: "Foo.aql", message: "Unknown tag 'controllr'" }]
 
 aql.repair()
 // → [{ selector: 'function[name="oldName"]', suggestion: 'function[name="newName"]', confidence: 0.95 }]
