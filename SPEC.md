@@ -17,6 +17,7 @@
     - [Advanced Extension Mechanisms](#advanced-extension-mechanisms)
   - [Example Taxonomies (Non-Normative)](#example-taxonomies-non-normative)
   - [Extractors](#extractors)
+  - [Plugins](#plugins)
   - [MCP Server](#mcp-server)
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
@@ -3736,6 +3737,134 @@ aql extract
 | Mocks don't need real dependencies | No database, no services, no config |
 | Stack traces give us file:line | We know where each route is defined |
 | Presets ship the mock | Users write 2 lines, not 200 |
+
+### Plugins
+
+Extractors solve one problem (runtime annotation discovery), but the system needs extensibility across three dimensions: code resolution, annotation extraction, and external search. Rather than three separate extension mechanisms, AQL uses a unified plugin protocol.
+
+#### Problem
+
+The built-in Code Resolver uses tree-sitter for structural parsing. This works for extracting functions, classes, and structs, but it can't:
+
+- Resolve TypeScript types (needs the TypeScript compiler)
+- Understand Babel/Flow syntax configurations (needs project-specific parser setup)
+- Search external registries for code that matches annotation patterns (needs network access)
+- Parse domain-specific languages (GraphQL schemas, Protobuf definitions, Terraform configs)
+
+Each of these requires a different parser, runtime, or network capability. Baking them all into the core binary would create a dependency explosion.
+
+#### Design
+
+A plugin is any executable that speaks JSON over stdin/stdout. It declares what capabilities it provides, and the AQL runtime dispatches to it.
+
+**Capabilities:**
+
+| Capability | Input | Output | Replaces |
+|------------|-------|--------|----------|
+| `resolve` | File path | Code elements (functions, classes, etc.) | In-process `CodeResolver` |
+| `extract` | Project root | Annotations (tag, bind, attrs) | Extractor scripts |
+| `search` | Query string | Code elements + source URLs | *(new)* |
+
+A single plugin can provide multiple capabilities. A TypeScript plugin might provide both `resolve` (parse `.ts` files into code elements) and `extract` (discover Next.js routes from framework conventions).
+
+**Protocol:**
+
+Plugins are long-running processes communicating via JSON-RPC over stdin/stdout:
+
+```
+AQL → Plugin (stdin):
+{"jsonrpc":"2.0","method":"resolve","params":{"file":"src/app.tsx"},"id":1}
+
+Plugin → AQL (stdout):
+{"jsonrpc":"2.0","result":{"elements":[{"tag":"function","name":"App","attrs":{"async":false},"location":{"line":3,"column":0}}]},"id":1}
+```
+
+```
+AQL → Plugin (stdin):
+{"jsonrpc":"2.0","method":"search","params":{"query":"cache strategy:write-behind"},"id":2}
+
+Plugin → AQL (stdout):
+{"jsonrpc":"2.0","result":{"results":[{"source":"npm:my-cache-lib","elements":[...],"annotations":[...]}]},"id":2}
+```
+
+**Manifest declaration:**
+
+```yaml
+plugins:
+  - name: typescript
+    run: npx aql-plugin-typescript
+    provides: [resolve]
+    extensions: [ts, tsx, js, jsx]
+  - name: npm-search
+    run: npx aql-plugin-npm
+    provides: [search]
+  - name: django-routes
+    run: python3 aql-plugin-django.py
+    provides: [extract]
+    globs: ["**/urls.py"]
+```
+
+#### Plugin Lifecycle
+
+1. **Startup**: AQL spawns the plugin process on first use
+2. **Handshake**: Plugin declares its capabilities and supported file types
+3. **Requests**: AQL sends JSON-RPC requests as needed
+4. **Caching**: Results are cached with mtime invalidation (same as built-in resolvers)
+5. **Shutdown**: Plugin process exits when the AQL session ends
+
+#### Language Agnosticism
+
+Plugins can be written in any language:
+
+- **Node.js**: `npx aql-plugin-typescript` — wraps the TypeScript compiler for full type-aware resolution
+- **Python**: `python3 aql-plugin-django.py` — introspects Django URL patterns
+- **Go**: `aql-plugin-go` — wraps the Go compiler for type-aware resolution
+- **Shell**: `./extract-routes.sh` — simple script that outputs JSON
+
+The only contract is: read JSON-RPC from stdin, write JSON-RPC to stdout.
+
+#### Fast Path
+
+The built-in tree-sitter resolver remains the default for languages it supports. Plugins extend or override:
+
+| Scenario | Resolution |
+|----------|------------|
+| `.rs` file, no plugin registered | Built-in tree-sitter Rust resolver (zero IPC overhead) |
+| `.ts` file, TypeScript plugin registered | Plugin handles resolution (full type fidelity) |
+| `.ts` file, no plugin registered | Built-in tree-sitter TypeScript resolver (structural only) |
+
+This means the system works out of the box for basic resolution, and plugins add fidelity where it matters.
+
+#### Search Plugins
+
+Search plugins enable querying code outside the local project:
+
+```typescript
+aql.search('cache[strategy="write-behind"]')
+// → [{ source: "npm:@cache/write-behind", version: "2.1.0",
+//      elements: [{ tag: "function", name: "createCache" }],
+//      annotations: [{ tag: "cache", attrs: { strategy: "write-behind" } }] }]
+```
+
+Use cases:
+- **npm/PyPI/crates.io**: Find packages whose annotations match a pattern
+- **GitHub/Sourcegraph**: Find usage patterns across public repositories
+- **Internal registries**: Search private packages by annotation metadata
+
+Search results include both code elements and annotations, allowing the same selector syntax to work across local and remote code.
+
+#### Plugin Distribution
+
+Plugins follow language-native distribution:
+
+| Language | Distribution | Install |
+|----------|-------------|---------|
+| Node.js | npm | `npm install -g aql-plugin-typescript` |
+| Python | pip | `pip install aql-plugin-django` |
+| Rust | cargo | `cargo install aql-plugin-go` |
+| Binary | GitHub Releases | Download and add to `$PATH` |
+
+No special packaging format — plugins are normal executables.
 
 ### AQL (Agent Query Language)
 

@@ -10,6 +10,7 @@ Each entry documents context, options considered, decision, and rationale
 
 ## Contents
 
+- [14. Plugins: Language-Agnostic Subprocess Protocol](#14-plugins-language-agnostic-subprocess-protocol)
 - [13. Implementation Language: Rust vs TypeScript](#13-implementation-language-rust-vs-typescript)
 - [12. MCP Server: One Per Project, Annotation-Only Queries Skip Parsing](#12-mcp-server-one-per-project-annotation-only-queries-skip-parsing)
 - [11. Code Resolver: Adapter Pattern with Parser Auto-Detection](#11-code-resolver-adapter-pattern-with-parser-auto-detection)
@@ -24,6 +25,59 @@ Each entry documents context, options considered, decision, and rationale
 - [2. Sidecar Files vs Centralized Store](#2-sidecar-files-vs-centralized-store)
 - [1. Inline Comments vs External Annotation Files](#1-inline-comments-vs-external-annotation-files)
 - [References](#references)
+
+---
+
+## 14. Plugins: Language-Agnostic Subprocess Protocol
+
+**Context**: The built-in Code Resolver uses tree-sitter for structural parsing, which works for basic code element extraction but can't access type-level information, framework-specific metadata, or external code registries. The Extractor mechanism (Decision 11) solves one dimension (runtime annotation discovery), but three separate extension points need a unified approach: code resolution, annotation extraction, and external search.
+
+**Options considered**:
+
+| Option | Description |
+|--------|-------------|
+| In-process dynamic libraries | Plugins as `.so`/`.dylib` loaded at runtime |
+| Language-specific SDKs | Separate SDK per language (npm package, pip package, etc.) |
+| Subprocess + JSON-RPC | Any executable that speaks JSON over stdin/stdout |
+| WASM plugins | WebAssembly modules loaded in-process |
+
+**Decision**: Subprocess + JSON-RPC over stdin/stdout. One protocol, three capabilities (`resolve`, `extract`, `search`).
+
+**Rationale**:
+
+- Language agnosticism
+  - A Python developer writes a Django plugin in Python; a Node developer writes a TypeScript plugin in Node
+  - No FFI, no shared memory, no ABI compatibility — just JSON over pipes
+  - The plugin author's only contract: read JSON-RPC from stdin, write JSON-RPC to stdout
+- Unifies three extension points
+  - Code resolution (parse files → code elements), annotation extraction (discover metadata), and external search (query registries) all use the same protocol
+  - A single plugin can provide multiple capabilities: a TypeScript plugin resolves `.ts` files and extracts Next.js routes
+  - No separate config formats for each extension type
+- Process isolation
+  - A crashing plugin doesn't take down the AQL server
+  - Plugins can have arbitrary dependencies without polluting the core binary
+  - Memory leaks in plugins are bounded to their process
+- Fast path preserved
+  - Built-in tree-sitter resolvers handle common languages with zero IPC overhead
+  - Plugins only activate for file types they register, or on explicit search queries
+  - The subprocess is long-lived (spawned once per session), not one-shot per request
+- Distribution via existing package managers
+  - npm for Node plugins, pip for Python, cargo for Rust, brew for binaries
+  - No custom plugin registry, no special packaging format
+
+**What we ruled out**:
+
+- Dynamic libraries
+  - Maximum performance but requires ABI stability, C FFI, and platform-specific builds
+  - Plugin authors must use Rust, C, or languages with C FFI — defeats language agnosticism
+- WASM
+  - Good isolation and portability, but WASI support for filesystem and network access is immature
+  - Plugin authors would need WASM-compatible toolchains, which is an adoption barrier
+- Language-specific SDKs
+  - Would require maintaining SDKs in every language AQL wants to support
+  - Each SDK duplicates protocol logic; the JSON-RPC approach means the "SDK" is just `readline()` + `JSON.parse()`
+
+**Trade-offs accepted**: JSON-RPC over stdio adds serialization overhead compared to in-process calls. For code resolution (the hot path), this means microseconds-to-milliseconds per file. The built-in tree-sitter resolver remains the default fast path; plugins are for cases where fidelity or capability matters more than raw speed.
 
 ---
 

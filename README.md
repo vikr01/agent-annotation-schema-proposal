@@ -155,7 +155,8 @@ aql.repair()
 | MCP server | Exposes query language as 5 MCP tools | Implemented ([aql-mcp-server](https://github.com/vikr01/aql)) |
 | Web REPL | Browser-based playground for queries | Implemented ([aql-repl](https://github.com/vikr01/aql)) |
 | Schema presets | Community-contributed tag presets (`@aql/preset-*`) | Specified |
-| Extractors | Runtime route extraction for Express, Django, etc. | Planned |
+| Extractors | Runtime route extraction for Express, Django, etc. | Implemented ([aql-engine](https://github.com/vikr01/aql)) |
+| Plugins | Language-agnostic subprocess protocol for resolvers, extractors, and search | Specified |
 | Mutations | Transactional read/write for annotation files | Planned |
 
 ---
